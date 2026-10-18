@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <level>verbose</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <sise>1000M</sise>
+    </logger>
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+    <mysql_port>9000</mysql_port>
+    <max_concurrent_querys>100</max_concurrent_querys>
+    <max_connections>4096 </max_connections>
+    <mark_cache_size>5GB</mark_cache_size>
+    <uncompressed_cache_size>8Gi</uncompressed_cache_size>
+    <max_server_memory_usage_to_ram_ratio>yes</max_server_memory_usage_to_ram_ratio>
+    <path>/var/lib/clickhouse</path>
+    <max_memory_usage>10000000000</max_memory_usage>
+    <Listen_host>0.0.0.0</Listen_host>
+    <merge_tree>
+        <max_suspicious_broken_parts>5</max_suspicious_broken_parts>
+        <parts_to_throw_inserts>300</parts_to_throw_inserts>
+    </merge_tree>
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <engine>ENGINE = MergeTree ORDER BY event_time</engine>
+        <partition_by>toYYYYMM(event_date)</partition_by>
+        <flush_interval_milliseconds>7.5s</flush_interval_milliseconds>
+    </query_log>
+    <remote_servers>
+        <prod>
+            <shard>
+                <internal_replication>yes</internal_replication>
+                <replica><port>9000</port></replica>
+                <replica><host>ch2</host><port>90000</port></replica>
+            </shard>
+            <replicas><host>x</host></replicas>
+        </prod>
+    </remote_servers>
+    <zookeeper>
+        <node><host>zk1</host><port>2181</port></node>
+        <root>clickhouse</root>
+        <zookeeper_load_balancing>closest</zookeeper_load_balancing>
+    </zookeeper>
+    <macros incl="macros" from_env="MACROS"/>
+    <include/>
+    <profiles>
+        <default>
+            <max_memory_usage>10G</max_memory_usage>
+            <load_balancing>random_order</load_balancing>
+            <max_threds>8</max_threds>
+            <log_queries>yes</log_queries>
+            <max_server_memory_usage>1000</max_server_memory_usage>
+        </default>
+    </profiles>
+    <users>
+        <default>
+            <password>secret</password>
+            <password_sha256_hex>abc</password_sha256_hex>
+            <networks><ip>::/0</ip><subnet>10.0.0.0/8</subnet></networks>
+            <profile>analytics</profile>
+        </default>
+    </users>
+</clickhouse>

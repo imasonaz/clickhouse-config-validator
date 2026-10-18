@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ClickHouse Config Check</title>
+<meta name="description" content="Validate and lint ClickHouse server, users and Keeper configuration files (XML or YAML) in your browser, with citations to the ClickHouse docs and source.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>ClickHouse Config Check</h1>
+    <span class="tag">server · users · keeper</span>
+  </div>
+  <div class="controls">
+    <div class="field"><label for="mode">Config</label>
+      <select id="mode">
+        <option value="auto">Auto-detect</option>
+        <option value="server">Server</option>
+        <option value="users">Users</option>
+        <option value="keeper">Keeper</option>
+      </select>
+    </div>
+    <div class="field"><label for="format">Format</label>
+      <select id="format">
+        <option value="auto">Auto</option>
+        <option value="xml">XML</option>
+        <option value="yaml">YAML</option>
+      </select>
+    </div>
+    <select id="sample" aria-label="Load an example"><option value="">Load example…</option></select>
+    <button class="btn primary" id="upload" type="button">Open file</button>
+    <input type="file" id="file" accept=".xml,.yaml,.yml,.conf,text/xml,text/yaml" hidden>
+    <button class="btn ghost" id="clear" type="button">Clear</button>
+  </div>
+</header>
+
+<main>
+  <section class="pane" aria-label="Configuration source">
+    <div class="pane-head">
+      <span class="filename" id="filename"></span>
+      <span class="spacer"></span>
+      <span>Paste, type or drop a file</span>
+    </div>
+    <div class="editor" id="editor">
+      <div class="gutter" aria-hidden="true"><div class="gutter-inner" id="gutter-inner"></div></div>
+      <div class="code-wrap">
+        <div class="backdrop" aria-hidden="true"><div class="backdrop-inner" id="backdrop-inner"></div></div>
+        <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" aria-label="Configuration file contents"></textarea>
+        <div class="empty-hint" id="empty-hint" hidden>Paste a config.xml, config.d fragment, users.xml or keeper_config.xml here.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pane" aria-label="Results">
+    <div class="pane-head">
+      <div class="summary" id="summary"></div>
+      <span class="spacer"></span>
+      <span class="meta" id="meta"></span>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="findings" aria-selected="true">Findings<span class="count"></span></button>
+      <button class="tab" role="tab" data-tab="settings" aria-selected="false">Settings<span class="count"></span></button>
+      <button class="tab" role="tab" data-tab="formatted" aria-selected="false">Format &amp; convert</button>
+    </div>
+    <div class="tabpanel" id="panel-findings" role="tabpanel"></div>
+    <div class="tabpanel" id="panel-settings" role="tabpanel" hidden></div>
+    <div class="tabpanel" id="panel-formatted" role="tabpanel" hidden></div>
+  </section>
+</main>
+
+<footer>
+  <span>Runs entirely in your browser; nothing is uploaded.</span>
+  <span id="generated"></span>
+  <span>Checks one file at a time, before config.d merging. Not affiliated with ClickHouse, Inc.</span>
+</footer>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

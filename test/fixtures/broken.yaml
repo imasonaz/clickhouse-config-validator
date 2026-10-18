@@ -1,0 +1,3 @@
+logger:
+  level: trace
+   log: /var/log/x.log
