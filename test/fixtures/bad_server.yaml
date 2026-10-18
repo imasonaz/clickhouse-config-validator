@@ -1,0 +1,14 @@
+clickhouse:
+  logger:
+    level: trace
+  tcp_port: 9000
+  tcp_port: 9001
+  max_concurrent_queries: 0x100
+  base: &b
+    a: 1
+  other:
+    <<: *b
+  keep_alive_timeout: "3s"
+  profiles:
+    default:
+      readonly: on
