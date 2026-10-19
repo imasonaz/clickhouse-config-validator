@@ -15,6 +15,8 @@ def read_args(s, i):
             while s[j] != '"':
                 j += 2 if s[j] == '\\' else 1
             cur.append(s[i:j+1]); i = j + 1; continue
+        if c == "'" and i > 0 and s[i-1].isalnum() and i + 1 < n and s[i+1].isalnum():
+            cur.append(c); i += 1; continue   # C++14 digit separator, e.g. 1'000
         if c == "'":
             j = i + 1
             while s[j] != "'":

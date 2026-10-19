@@ -177,6 +177,8 @@ zookeeper:
             <load_balancing>random</load_balancing>
             <log_queries>yes</log_queries>
             <readonly>1</readonly>
+            <use_reader_executor>1</use_reader_executor>
+            <enable_sharding_aggregator>1</enable_sharding_aggregator>
         </analytics>
     </profiles>
     <users>
@@ -193,5 +195,138 @@ zookeeper:
     </users>
 </clickhouse>
 `,
+  },
+  {
+    id: 'merge-set',
+    label: 'config.d merge (multiple files)',
+    files: [
+      { path: 'config.xml', text: `<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <level>trace</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <size>1000M</size>
+        <count>10</count>
+    </logger>
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+    <path>/var/lib/clickhouse/</path>
+    <max_connections from_env="CH_MAX_CONNECTIONS"/>
+    <include_from>/etc/clickhouse-server/metrika.xml</include_from>
+    <zookeeper incl="zookeeper-servers"/>
+    <remote_servers>
+        <default>
+            <shard><replica><host>localhost</host><port>9000</port></replica></shard>
+        </default>
+    </remote_servers>
+</clickhouse>
+` },
+      { path: 'config.d/10-logging.xml', text: `<clickhouse>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+    </logger>
+</clickhouse>
+` },
+      { path: 'config.d/20-cluster.yaml', text: `remote_servers:
+  "@replace": true
+  prod:
+    shard:
+      - replica:
+          host: ch-1
+          port: 9000
+      - replica:
+          host: ch-2
+          port: 9000
+http_port:
+  "@remove": 1
+` },
+      { path: 'config.d/30-tuning.xml', text: `<clickhouse>
+    <max_concurrent_queries>lots</max_concurrent_queries>
+    <max_table_size_to_dorp>0</max_table_size_to_dorp>
+    <merge_tree>
+        <max_threads>8</max_threads>
+    </merge_tree>
+</clickhouse>
+` },
+      { path: 'metrika.xml', text: `<clickhouse>
+    <zookeeper-servers>
+        <node><host>zk-1</host><port>2181</port></node>
+        <node><host>zk-2</host><port>2181</port></node>
+        <node><host>zk-3</host><port>2181</port></node>
+    </zookeeper-servers>
+</clickhouse>
+` },
+    ],
+    substitutions: 'CH_MAX_CONNECTIONS=8192',
+  },
+  {
+    id: 'keeper-ensemble',
+    label: 'Keeper ensemble + server (multiple files)',
+    files: [
+      { path: 'config.xml', text: `<clickhouse>
+    <zookeeper>
+        <node><host>keeper-1</host><port>9181</port></node>
+        <node><host>keeper-2</host><port>9234</port></node>
+        <node><host>keeper-3</host><port>9181</port></node>
+    </zookeeper>
+</clickhouse>
+` },
+      { path: 'keeper-1.xml', text: `<clickhouse>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+        </coordination_settings>
+        <raft_configuration>
+            <server><id>1</id><hostname>keeper-1</hostname><port>9234</port></server>
+            <server><id>2</id><hostname>keeper-2</hostname><port>9234</port></server>
+            <server><id>3</id><hostname>keeper-3</hostname><port>9234</port></server>
+        </raft_configuration>
+    </keeper_server>
+</clickhouse>
+` },
+      { path: 'keeper-2.xml', text: `<clickhouse>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>2</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <heart_beat_interval_ms>1000</heart_beat_interval_ms>
+        </coordination_settings>
+        <raft_configuration>
+            <server><id>1</id><hostname>keeper-1</hostname><port>9234</port></server>
+            <server><id>2</id><hostname>keeper-2</hostname><port>9234</port></server>
+            <server><id>3</id><hostname>keeper-3</hostname><port>9234</port></server>
+        </raft_configuration>
+    </keeper_server>
+</clickhouse>
+` },
+      { path: 'keeper-3.xml', text: `<clickhouse>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>2</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+        </coordination_settings>
+        <raft_configuration>
+            <server><id>1</id><hostname>keeper-1</hostname><port>9234</port></server>
+            <server><id>2</id><hostname>keeper-2</hostname><port>9235</port></server>
+            <server><id>3</id><hostname>keeper-3</hostname><port>9234</port></server>
+        </raft_configuration>
+    </keeper_server>
+</clickhouse>
+` },
+    ],
   },
 ];

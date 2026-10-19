@@ -3,7 +3,7 @@ Usage: python3 -I gen.py <src_dir> <out_json>"""
 import sys, os, re, json, datetime
 import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cppmacro import find_calls, cstr
+from cppmacro import read_args, find_calls, cstr
 
 src, out = sys.argv[1], sys.argv[2]
 rd = lambda f: open(os.path.join(src, f), encoding='utf-8').read()
@@ -28,6 +28,17 @@ def region(text, start_pat, end_pat=None):
     j = text.index(end_pat, i) if end_pat else len(text)
     return text[i:j]
 
+def parse_history(recs):
+    """History records `{"26.8", prev, new, "reason"}` (newest first) -> [[version, prev, new, reason]]."""
+    out = []
+    for r in recs:
+        r = r.replace('\\\n', ' ').strip()
+        if not r.startswith('{'): continue
+        a, _ = read_args('(' + r[1:-1] + ')', 0)
+        if len(a) < 4 or not a[0].strip().startswith('"'): continue
+        out.append([cstr(a[0]), clean_default(a[1]), clean_default(a[2]), clean_desc(cstr(a[3]), 300)])
+    return out
+
 def parse_list(text, limit=None, path_arg=False):
     res = {}
     aliases = {}
@@ -36,6 +47,8 @@ def parse_list(text, limit=None, path_arg=False):
             if len(a) < 4: continue
             t, name, dflt = a[1], a[2], a[3]
             res[name] = {'t': t, 'd': clean_default(dflt), 'obsolete': True}
+            h = parse_history(a[4:])
+            if h: res[name]['h'] = h
             continue
         if len(a) < 4 or not re.fullmatch(r'\w+', a[1] or ''): continue
         t, name, dflt, desc = a[0], a[1], a[2], a[3]
@@ -47,7 +60,10 @@ def parse_list(text, limit=None, path_arg=False):
         flags = a[4] if len(a) > 4 else ''
         if 'OBSOLETE' in flags: e['obsolete'] = True
         if 'EXPERIMENTAL' in flags: e['tier'] = 'experimental'
+        elif 'PRIVATE_PREVIEW' in flags: e['tier'] = 'private_preview'
         elif 'BETA' in flags: e['tier'] = 'beta'
+        h = parse_history(a[6:] if macro == 'DECLARE_WITH_ALIAS' else a[5:])
+        if h: e['h'] = h
         res[name] = e
     return res, aliases
 
@@ -70,6 +86,10 @@ mergetree, mt_alias = parse_list(region(mt_text, '#define MERGE_TREE_SETTINGS', 
 # ---- session settings (for profiles)
 st = rd('Settings.cpp')
 session, s_alias = parse_list(region(st, '#define COMMON_SETTINGS(DECLARE, DECLARE_WITH_ALIAS) \\'), limit=220)
+# The obsolete list is parsed on its own: a stray macro-like token earlier in the file can desync one long scan.
+obs_s, _ = parse_list(st[st.index('#define OBSOLETE_SETTINGS(M, ALIAS)'):], limit=220)
+for k, v in obs_s.items():
+    if v.get('obsolete'): session[k] = {**session.get(k, {}), **v}
 fmt, f_alias = parse_list(rd('FormatFactorySettings.h'), limit=220)
 session.update({k: v for k, v in fmt.items() if k not in session})
 s_alias.update(f_alias)

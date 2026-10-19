@@ -1,7 +1,7 @@
 # ClickHouse Config Check
 
 A static, client-side page for troubleshooting ClickHouse **server**, **users** and **Keeper** configuration files in XML or YAML.
-Paste or drop a file; it is parsed, type-checked and linted in the browser, and every finding links to the ClickHouse docs and, where the behaviour comes from server code, to the source file.
+Paste or drop a file, several files or a whole config folder; it is parsed, type-checked and linted in the browser, and every finding links to the ClickHouse docs and, where the behaviour comes from server code, to the source file.
 
 Nothing is uploaded. There is no backend.
 
@@ -11,24 +11,45 @@ Nothing is uploaded. There is no backend.
 |---|---|
 | Syntax | XML well-formedness with line/column; YAML syntax; YAML-to-XML conversion rules of `YAMLParser.cpp` (`@attr`, `#text`, sequences, the top-level `clickhouse:` key, duplicate and merge keys) |
 | Preprocessor | unknown/misspelled attributes, more than one of `incl`/`from_env`/`from_zk`, `<include>` rules, `yaml="true"` placement, `incl` without `include_from` |
-| Server settings | 430 settings from `ServerSettings.cpp` with exact parsing rules: size suffixes (`10G`, `10Gi`, not `10GB`), `Bool` accepts only `0/1/true/false`, enums, ranges, trailing slash on `path`/`tmp_path`, nesting under scalars, case-sensitive key typos with "did you mean" |
+| Server settings | 472 settings from `ServerSettings.cpp` with exact parsing rules: size suffixes (`10G`, `10Gi`, not `10GB`), `Bool` accepts only `0/1/true/false`, enums, ranges, trailing slash on `path`/`tmp_path`, nesting under scalars, case-sensitive key typos with "did you mean" |
 | Misplaced settings | session settings at the top level, MergeTree settings outside `<merge_tree>`, coordination settings outside `<coordination_settings>`, server settings inside profiles |
 | `merge_tree` / profiles / constraints | unknown names are startup errors (`UNKNOWN_SETTING`), values type-checked against `MergeTreeSettings.cpp` and `Settings.cpp` |
 | Users | one auth method per user, hash lengths, `networks` keys and subnets, profile/quota references, `grants` conflicts, open users |
 | Clusters | `remote_servers` structure as enforced by `Cluster.cpp` (shard/replica elements, missing host/port, shard names all-or-none) |
 | Keeper | required keys, coordination settings (unknown keys refuse startup), feature flags, four-letter-word list, `raft_configuration` checks mirrored from `KeeperStateManager.cpp` (duplicate ids/endpoints, own `server_id` present, localhost mixing, raft port collisions), election/heartbeat bounds, even voter counts |
+| Merging | `config.d`/`users.d` fragments merged into the main file as `ConfigProcessor.cpp` does (name order, `replace`, `remove`, root checks), then `incl` (from the `include_from` file), `from_env` and `from_zk` substitutions using values you supply; the merged result is validated, with every finding pointing at the file and line it came from |
+| Lifecycle | obsolete settings (with the version and reason), experimental / private preview / beta settings, `allow_feature_tier` rejections, and, for a chosen target version, settings that don't exist yet; defaults are shown for that version |
+| Logging, disks, encryption | `logger.size`/`rotation` and `count` as Poco parses them (`1GB` fails startup), S3/Azure disk endpoints and credential pairs, encrypted disks and `encryption_codecs` key sizes, `current_key_id`, nonce length |
+| Addresses | `listen_host`, `interserver_http_host`, `host`, `hostname`: valid IPv4 / IPv6 / host names, no ports |
 | Other sections | `zookeeper`, `logger`, system log tables (`engine` vs `partition_by`/`order_by`/`ttl`…), `storage_configuration` disk/policy references, duplicate ports, `listen_host` conflicts |
 
-It also shows a table of every recognised setting with its default and type, re-formats the file, and converts XML ↔ YAML.
+In the editor, hovering a key shows its type, default and docs, and typing `<` (or a YAML key) offers the keys valid at that spot. Unknown keys suggest where a key of that name is valid, and misspellings get a one-click rename. The page also shows a table of every recognised setting with its default, type and default history, re-formats files, converts XML ↔ YAML, and downloads the formatted, converted or merged (`*-preprocessed.xml`) config. Findings export as Markdown or JSON, and **Share link** puts the files in the URL fragment (never sent to a server) with passwords, keys and secrets replaced by `REDACTED`.
 
-Limitations: each file is checked on its own, before `config.d`/`users.d` merging, so cross-file references are reported as warnings. Values from `from_env`, `from_zk` and `incl` are not checked.
+With several Keeper configs loaded it cross-checks the ensemble: unique `server_id`s, identical `raft_configuration`, matching coordination timeouts, and server `<zookeeper>` entries that point at Raft ports instead of client ports.
+
+Limitations: substitutions without a value you supply are reported and left unresolved; a lone fragment checked without its main file can't resolve references to other files.
 
 ## Run locally
 
 ```sh
 python3 -m http.server 8000   # then open http://localhost:8000
 node test/run.mjs             # regression tests (Node 18+)
-node test/cli.mjs path/to/config.xml   # command-line report
+```
+
+## Command line and CI
+
+```sh
+node bin/ch-config-check.mjs /etc/clickhouse-server            # config.xml + config.d and users.xml + users.d, merged
+node bin/ch-config-check.mjs --env --version 25.8 deploy/clickhouse
+node bin/ch-config-check.mjs --format github deploy/clickhouse # annotations in GitHub Actions
+```
+
+Formats: `text`, `markdown`, `json`, `github`. Exit code is 1 when a finding reaches `--fail-on` (default `error`). `--env` resolves `from_env` from the process environment; `--subst file` reads `NAME=value` and `/zk/path=value` lines. It needs only Node 18+ and this repository (no npm install).
+
+GitHub Actions step:
+
+```yaml
+- run: node path/to/clickhouse-config-check/bin/ch-config-check.mjs --format github deploy/clickhouse
 ```
 
 ## Settings data

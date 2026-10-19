@@ -3,6 +3,8 @@
 import { pathOf, child, childrenNamed, textOf, walk, getPath } from './tree.js';
 import { ref, SRC } from './docs.js';
 import { checkValue, suggest, SETTING_BOOL, POCO_BOOL } from './types.js';
+import { checkHost, isIPv4, isIPv6 } from './net.js';
+import { cmpVer, addedIn, obsoleteSince, defaultAt, defaultChanges } from './versions.js';
 
 // Attributes ClickHouse's ConfigProcessor understands (configuration-files docs + ConfigProcessor.cpp).
 const PREPROCESSOR_ATTRS = new Set(['replace', 'remove', 'incl', 'from_env', 'from_zk', 'optional', 'merge', 'yaml', 'encrypted_by', 'hide_in_preprocessed']);
@@ -64,6 +66,8 @@ const ZK_LB = ['random', 'in_order', 'nearest_hostname', 'hostname_levenshtein_d
 const SERVER_ONLY_HINTS = ['path', 'tmp_path', 'http_port', 'tcp_port', 'users', 'profiles', 'remote_servers', 'mark_cache_size', 'users_config',
   'user_directories', 'merge_tree', 'query_log', 'macros', 'zookeeper', 'storage_configuration', 'default_profile', 'interserver_http_port'];
 
+export { KEEPER_KEYS, USER_KEYS, SYSTEM_LOGS, locationIndex };
+
 export function detectMode(root) {
   const names = new Set(root.children.map((c) => c.name));
   const hasKeeper = names.has('keeper_server');
@@ -74,7 +78,7 @@ export function detectMode(root) {
   return 'server';
 }
 
-export function validate(doc, { schema, mode = 'auto', format = 'xml' } = {}) {
+export function validate(doc, { schema, mode = 'auto', format = 'xml', version = 'latest', featureTier = null } = {}) {
   const findings = [];
   const recognized = [];   // settings we recognised (for the overview table)
   const root = doc.root;
@@ -90,10 +94,12 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml' } = {}) {
       line: extra.line ?? node?.line ?? 1,
       col: extra.col ?? node?.col ?? 1,
       path: node ? relPath(node).join(' › ') : '',
+      file: extra.file ?? node?.file,
+      ...(extra.fix ? { fix: { from: node?.name, ...extra.fix } } : {}),
     });
   };
   const hasSubst = (n) => SUBST_ATTRS.some((a) => n.attrs.has(a)) || n.attrs.has('encrypted_by');
-  const valueNode = (n) => ({ ...n, line: n.textLine || n.line, col: 1 });
+  const valueNode = (n) => ({ ...n, line: n.textLine || n.line, col: 1, file: n.textFile || n.file });
 
   // ---------------------------------------------------------------- parse-level notes
   for (const w of doc.warnings || []) add('warning', 'syntax', null, w.message, [], { line: w.line, col: w.col });
@@ -131,6 +137,10 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml' } = {}) {
     }
     const substs = SUBST_ATTRS.filter((a) => n.attrs.has(a));
     if (substs.length > 1) add('error', 'multi-subst', n, `More than one substitution attribute (${substs.join(', ')}) on <${n.name}>; only one is allowed.`, [ref.source(SRC.configProcessor, 'ConfigProcessor.cpp (doIncludesRecursive)')]);
+    for (const a of ['from_env', 'from_zk']) {
+      if (n.attrs.has(a) && !n.attrs.has('replace') && (n.children.length || (n.text && n.text.trim())))
+        add('error', 'subst-has-value', n, `<${n.name}> has a value and '${a}' but no 'replace' attribute; ClickHouse fails with "has value and does not have 'replace' attribute, can't process ${a} substitution". Add replace="1" to use the value as a default.`, [ref.configFiles('default-values', 'Substitution default values'), ref.source(SRC.configProcessor, 'ConfigProcessor.cpp (doIncludesRecursive)')]);
+    }
     if (n.attrs.has('yaml')) {
       if (n.name !== 'include' || !n.attrs.has('from_zk')) add('error', 'yaml-attr', n, "Attribute 'yaml' is allowed only on <include from_zk=...>.", [ref.source(SRC.configProcessor, 'ConfigProcessor.cpp')]);
       else if (n.attrs.get('yaml').value !== 'true') add('error', 'yaml-attr', n, "Attribute 'yaml' for <include from_zk=...> must be 'true'.", [ref.source(SRC.configProcessor, 'ConfigProcessor.cpp')]);
@@ -139,7 +149,7 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml' } = {}) {
       if (n.children.length || (n.text && n.text.trim())) add('error', 'include-children', n, '<include> element must have no children.', [ref.source(SRC.configProcessor, 'ConfigProcessor.cpp')]);
       if (!substs.length) add('error', 'include-no-subst', n, '<include> has no substitution attribute (incl, from_zk or from_env); exactly one is required.', [ref.configFiles('substitution-with-file-content', 'Substitution with file content'), ref.source(SRC.configProcessor, 'ConfigProcessor.cpp')]);
     }
-    if (n.attrs.has('replace') && n.attrs.has('remove')) add('warning', 'replace-remove', n, `<${n.name}> has both 'replace' and 'remove'; 'remove' wins and the element is dropped.`, [ref.configFiles('merging', 'Merging configuration')]);
+    if (n.attrs.has('replace') && n.attrs.has('remove')) add('error', 'replace-remove', n, `<${n.name}> has both 'replace' and 'remove'; ClickHouse throws "both remove and replace attributes set for element" while merging.`, [ref.configFiles('merging', 'Merging configuration'), ref.source(SRC.configProcessor, 'ConfigProcessor.cpp (mergeRecursive)')]);
     if (n.attrs.has('replace') && substs.length && n.attrs.get('replace').line > n.attrs.get(substs[0]).line && format === 'xml')
       add('info', 'replace-order', n, `For a default value with ${substs[0]}, the docs say 'replace' must appear before '${substs[0]}'.`, [ref.configFiles('default-values', 'Substitution default values')]);
     if (n.mixedText) add('warning', 'mixed-content', n, `<${n.name}> mixes text ('${n.mixedText.text.slice(0, 40)}') with child elements; the text is ignored.`, [], { line: n.mixedText.line });
@@ -165,7 +175,10 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml' } = {}) {
     }
   });
 
-  const ctx = { schema, add, recognized, mode: effectiveMode, cfg, relPath, hasSubst, valueNode, format, root };
+  // allow_feature_tier: from this document, or passed in (e.g. from the server config when checking users.xml).
+  const aft = getPath(cfg, 'allow_feature_tier');
+  const tierLimit = aft && /^\d+$/.test(textOf(aft) || '') ? Number(textOf(aft)) : featureTier;
+  const ctx = { schema, add, recognized, mode: effectiveMode, cfg, relPath, hasSubst, valueNode, format, root, version, tierLimit };
 
   // ---------------------------------------------------------------- section checks
   checkRoot(ctx);
@@ -181,6 +194,8 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml' } = {}) {
   checkStorage(ctx);
   checkLogger(ctx);
   checkMisc(ctx);
+  checkHosts(ctx);
+  checkEncryptionCodecs(ctx);
 
   const order = { error: 0, warning: 1, info: 2 };
   findings.sort((a, b) => order[a.sev] - order[b.sev] || a.line - b.line);
@@ -223,10 +238,99 @@ function typeCheck(ctx, node, type, opts, refs) {
 function unknownChild(ctx, node, known, refs, { sev = 'warning', what = 'key' } = {}) {
   const s = suggest(node.name, known);
   if (s && s.caseOnly) {
-    ctx.add('error', 'case', node, `'${node.name}' should be '${s.name}': ClickHouse configuration keys are case-sensitive.`, refs);
+    ctx.add('error', 'case', node, `'${node.name}' should be '${s.name}': ClickHouse configuration keys are case-sensitive.`, refs, { fix: { kind: 'rename', to: s.name } });
     return;
   }
-  ctx.add(s ? 'warning' : sev, 'unknown-key', node, `Unknown ${what} <${node.name}>${s ? `; did you mean <${s.name}>?` : '.'}`, refs);
+  const loc = s ? null : whereValid(ctx, node);
+  ctx.add(s || loc ? 'warning' : sev, 'unknown-key', node, `Unknown ${what} <${node.name}>${s ? `; did you mean <${s.name}>?` : '.'}${loc ? loc.msg : ''}`,
+    [...refs, ...(loc ? loc.refs : [])], { fix: s ? { kind: 'rename', to: s.name } : loc ? { kind: 'move', to: loc.parents } : undefined });
+}
+
+// Collapse user-chosen names (cluster, disk, user...) so paths compare by structure.
+const normLoc = (p) => p
+  .replace(/^remote_servers\.[^.]+/, 'remote_servers.<cluster>')
+  .replace(/^storage_configuration\.disks\.[^.]+/, 'storage_configuration.disks.<disk>')
+  .replace(/^storage_configuration\.policies\.[^.]+/, 'storage_configuration.policies.<policy>')
+  .replace(/^users\.[^.]+/, 'users.<user>').replace(/^profiles\.[^.]+/, 'profiles.<profile>');
+
+// Index of where each key name is valid: element name -> Map(parent path -> { label, ref }).
+const LOC_CACHE = new WeakMap();
+function locationIndex(schema) {
+  if (LOC_CACHE.has(schema)) return LOC_CACHE.get(schema);
+  const idx = new Map();
+  const put = (name, parent, label, r) => {
+    if (!idx.has(name)) idx.set(name, new Map());
+    const m = idx.get(name);
+    if (!m.has(parent)) m.set(parent, { label, ref: r });
+  };
+  for (const name of Object.keys(schema.server)) put(name, '', 'server setting', () => ref.server(name));
+  for (const s of Object.values(schema.serverWithPath)) { const segs = s.path.split('.'); put(segs.pop(), segs.join('.'), 'server setting', () => ref.server(segs[0] || s.path)); }
+  for (const name of Object.keys(KEEPER_KEYS)) put(name, 'keeper_server', 'Keeper setting', () => ref.keeper());
+  for (const name of Object.keys(schema.coordination)) put(name, 'keeper_server.coordination_settings', 'Keeper coordination setting', () => ref.keeperCoordination());
+  for (const name of Object.keys(schema.mergeTree)) { put(name, 'merge_tree', 'MergeTree setting', () => ref.mergeTree(name)); put(name, 'replicated_merge_tree', 'MergeTree setting', () => ref.mergeTree(name)); }
+  for (const name of Object.keys(schema.session)) put(name, 'profiles.<profile>', 'session setting', () => ref.session(name));
+  for (const name of USER_KEYS) put(name, 'users.<user>', 'user property', () => ref.users());
+  for (const [list, label] of [[schema.refPaths.server, 'server key'], [schema.refPaths.keeper, 'Keeper key']]) for (const p of list) {
+    const segs = p.split('.');
+    const name = segs.pop();
+    const parent = normLoc(segs.join('.'));
+    put(name, parent, label, () => (parent.startsWith('keeper_server') ? ref.keeper() : ref.server(segs[0] || name)));
+  }
+  LOC_CACHE.set(schema, idx);
+  return idx;
+}
+
+/** For an unknown key, name the places where a key of that name is valid (when there are few enough to be useful). */
+function whereValid(ctx, node) {
+  const m = locationIndex(ctx.schema).get(node.name);
+  if (!m) return null;
+  const here = normLoc(ctx.relPath(node).slice(0, -1).join('.'));
+  const cands = [...m].filter(([p]) => p !== here);
+  if (!cands.length || cands.length > 4) return null;
+  const show = (p) => (p ? p.split('.').map((x) => (x.startsWith('<') ? x.replace(/^<(\w+)>$/, '<$1 name>') : `<${x}>`)).join(' › ') : 'the top level, directly under <clickhouse>');
+  const msg = cands.length === 1
+    ? ` It belongs at ${show(cands[0][0])} (${cands[0][1].label}); move it there.`
+    : ` A key named <${node.name}> is valid at: ${cands.map(([p, v]) => `${show(p)} (${v.label})`).join('; ')}.`;
+  const refs = [];
+  for (const [, v] of cands) { const r = v.ref(); if (!refs.some((x) => x.url === r.url)) refs.push(r); }
+  return { msg, refs: refs.slice(0, 2), parents: cands.map(([p]) => p) };
+}
+
+const TIER = {
+  experimental: { sev: 'warning', rank: 1, text: 'experimental: in active development and not for production use' },
+  private_preview: { sev: 'warning', rank: 2, text: 'in private preview: on the path to general availability but not recommended for production yet' },
+  beta: { sev: 'info', rank: 3, text: 'beta: no known bugs, but correctness together with other features is not guaranteed' },
+};
+const TIER_NAME = { experimental: 'experimental', private_preview: 'private preview', beta: 'beta' };
+
+/** Obsolete, feature tier and version-availability notes for a recognised setting; also fixes up the
+ *  overview row's default for the target version. kind: 'profile' | 'mergetree' marks settings whose
+ *  unknown names stop the server from loading the config. */
+function lifecycle(ctx, node, what, name, def, docRef, kind = '') {
+  const refs = [docRef];
+  const row = ctx.recognized[ctx.recognized.length - 1];
+  if (row && row.name.endsWith(name)) {
+    row.def = defaultAt(def, ctx.version);
+    const ch = defaultChanges(def);
+    if (ch.length) row.hist = ch.map((c) => `${c.version}: ${c.from} → ${c.to}`).join('; ');
+    if (def.tier) row.tier = def.tier;
+  }
+  const o = def.obsolete ? obsoleteSince(def) : null;
+  if (def.obsolete && (ctx.version === 'latest' || !o || cmpVer(o.version, ctx.version) <= 0)) {
+    ctx.add('warning', 'obsolete', node, `<${node.name}> is an obsolete ${what}${o ? ` (since ${o.version})` : ''} and has no effect; remove it.${o && !/^obsolete setting\.?$/i.test(o.reason) ? ` Reason: ${o.reason}` : ''}`, refs);
+    return;
+  }
+  const added = addedIn(def);
+  if (ctx.version !== 'latest' && added && cmpVer(added, ctx.version) > 0) {
+    const fail = kind === 'profile' ? 'loading the users config fails with UNKNOWN_SETTING' : kind === 'mergetree' ? 'the server refuses to start (UNKNOWN_SETTING)' : 'it is ignored';
+    ctx.add('error', 'version-too-new', node, `<${node.name}> was added in ${added}; on ${ctx.version} it doesn't exist, so ${fail}.`, refs);
+  }
+  if (def.tier && !def.obsolete) {
+    const t = TIER[def.tier];
+    ctx.add(t.sev, `tier-${def.tier.replace('_', '-')}`, node, `<${node.name}> is ${t.text}.`, [...refs, ref.server('allow_feature_tier')]);
+    if (kind && ctx.tierLimit != null && ctx.tierLimit >= t.rank)
+      ctx.add('warning', 'tier-blocked', node, `allow_feature_tier is ${ctx.tierLimit}, which rejects changes to ${TIER_NAME[def.tier]} settings like <${node.name}> (it acts like a readonly constraint on them).`, [ref.server('allow_feature_tier')]);
+  }
 }
 
 function settingDoc(scope, name) {
@@ -250,8 +354,8 @@ function checkRoot(ctx) {
     if (name === 'include') continue;
     const def = server[name];
     if (def) {
-      ctx.recognized.push({ scope: 'server', name, type: def.t, def: def.d, value: n.text != null ? n.text.trim() : (n.children.length ? '(section)' : ''), line: n.line, url: ref.server(name).url, desc: def.desc });
-      if (def.obsolete) add('info', 'obsolete', n, `<${name}> is obsolete and has no effect.`, [ref.server(name)]);
+      ctx.recognized.push({ scope: 'server', name, type: def.t, def: def.d, value: n.text != null ? n.text.trim() : (n.children.length ? '(section)' : ''), line: n.line, file: n.textFile || n.file, url: ref.server(name).url, desc: def.desc });
+      lifecycle(ctx, n, 'server setting', name, def, ref.server(name));
       typeCheck(ctx, n, def.t, {}, [ref.server(name), ref.source(SRC.serverSettings, 'ServerSettings.cpp')]);
       if (def.t === 'String' && /trailing slash is mandatory/i.test(def.desc || '') && n.text != null && !ctx.hasSubst(n) && n.text.trim() && !n.text.trim().endsWith('/'))
         add('error', 'trailing-slash', ctx.valueNode(n), `<${name}> must end with '/': the docs state "The trailing slash is mandatory."`, [ref.server(name)]);
@@ -280,16 +384,20 @@ function checkRoot(ctx) {
       continue;
     }
     const s = suggest(name, known);
-    if (s && s.caseOnly) add('error', 'case', n, `'${name}' should be '${s.name}': configuration keys are case-sensitive.`, [ref.server(s.name)]);
-    else if (s) add('warning', 'unknown-key', n, `Unknown top-level key <${name}>; did you mean <${s.name}>? Unknown keys are silently ignored.`, [ref.server(s.name)]);
-    else add('info', 'unknown-key', n, `<${name}> is not a known server setting (not in ServerSettings.cpp, the server settings docs, or the reference config). ClickHouse ignores unknown keys unless a component reads them.`, [ref.server(name)]);
+    if (s && s.caseOnly) add('error', 'case', n, `'${name}' should be '${s.name}': configuration keys are case-sensitive.`, [ref.server(s.name)], { fix: { kind: 'rename', to: s.name } });
+    else if (s) add('warning', 'unknown-key', n, `Unknown top-level key <${name}>; did you mean <${s.name}>? Unknown keys are silently ignored.`, [ref.server(s.name)], { fix: { kind: 'rename', to: s.name } });
+    else {
+      const loc = whereValid(ctx, n);
+      if (loc) add('warning', 'unknown-key', n, `<${name}> is not a top-level server setting.${loc.msg} At the top level ClickHouse ignores it.`, loc.refs, { fix: { kind: 'move', to: loc.parents } });
+      else add('info', 'unknown-key', n, `<${name}> is not a known server setting (not in ServerSettings.cpp, the server settings docs, or the reference config). ClickHouse ignores unknown keys unless a component reads them.`, [ref.server(name)]);
+    }
   }
 
   // Settings configured by path (logger.level, openSSL.server.*, query_cache.*, distributed_ddl.*, …).
   for (const [name, s] of Object.entries(schema.serverWithPath)) {
     const n = getPath(cfg, s.path);
     if (!n) continue;
-    ctx.recognized.push({ scope: 'server', name: s.path, type: s.t, def: s.d, value: n.text != null ? n.text.trim() : '', line: n.line, url: ref.server(s.path.split('.')[0]).url, desc: s.desc });
+    ctx.recognized.push({ scope: 'server', name: s.path, type: s.t, def: s.d, value: n.text != null ? n.text.trim() : '', line: n.line, file: n.textFile || n.file, url: ref.server(s.path.split('.')[0]).url, desc: s.desc });
     typeCheck(ctx, n, s.t, {}, [ref.server(docKeyForPath(ctx.schema, s.path, name)), ref.source(SRC.serverSettings, 'ServerSettings.cpp')]);
   }
 
@@ -344,7 +452,7 @@ function checkKeeper(ctx, ks) {
       continue;
     }
     if (def.section) continue;
-    ctx.recognized.push({ scope: 'keeper', name: `keeper_server.${c.name}`, type: def.t, def: '', value: textOf(c) ?? '', line: c.line, url: kref.url });
+    ctx.recognized.push({ scope: 'keeper', name: `keeper_server.${c.name}`, type: def.t, def: '', value: textOf(c) ?? '', line: c.line, file: c.textFile || c.file, url: kref.url });
     typeCheck(ctx, c, def.t, { parser: def.p || 'setting' }, [kref]);
   }
 
@@ -385,12 +493,13 @@ function checkKeeper(ctx, ks) {
       const def = schema.coordination[c.name];
       if (!def) {
         const s = suggest(c.name, names);
-        add('error', 'unknown-coord', c, `Unknown coordination setting <${c.name}>${s ? `; did you mean <${s.name}>?` : ''}. Keeper refuses to start (UNKNOWN_SETTING "in Coordination settings config").`,
-          [ref.keeperCoordination(), ref.source(SRC.coordination, 'CoordinationSettings.cpp (loadFromConfig)')]);
+        const loc = s ? null : whereValid(ctx, c);
+        add('error', 'unknown-coord', c, `Unknown coordination setting <${c.name}>${s ? `; did you mean <${s.name}>?` : ''}. Keeper refuses to start (UNKNOWN_SETTING "in Coordination settings config").${loc ? loc.msg : ''}`,
+          [ref.keeperCoordination(), ref.source(SRC.coordination, 'CoordinationSettings.cpp (loadFromConfig)'), ...(loc ? loc.refs : [])], { fix: s ? { kind: 'rename', to: s.name } : loc ? { kind: 'move', to: loc.parents } : undefined });
         continue;
       }
-      ctx.recognized.push({ scope: 'coordination', name: `coordination_settings.${c.name}`, type: def.t, def: def.d, value: textOf(c) ?? '', line: c.line, url: ref.keeperCoordination().url, desc: def.desc });
-      if (def.obsolete) add('info', 'obsolete', c, `<${c.name}> is obsolete and has no effect.`, [ref.keeperCoordination()]);
+      ctx.recognized.push({ scope: 'coordination', name: `coordination_settings.${c.name}`, type: def.t, def: def.d, value: textOf(c) ?? '', line: c.line, file: c.textFile || c.file, url: ref.keeperCoordination().url, desc: def.desc });
+      lifecycle(ctx, c, 'coordination setting', c.name, def, ref.keeperCoordination());
       typeCheck(ctx, c, def.t, {}, [ref.keeperCoordination(), ref.source(SRC.coordination, 'CoordinationSettings.cpp')]);
     }
     const num = (k) => { const n = child(cs, k); const v = n && textOf(n); return v && /^\d+$/.test(v) ? Number(v) : null; };
@@ -555,13 +664,14 @@ function checkUsersFile(ctx) {
         if (!r) {
           const sug = suggest(s.name, sessionNames);
           const isServer = schema.server[s.name] && !schema.serverProfileAllowlist.includes(s.name);
-          add('error', 'unknown-setting', s, `Unknown setting <${s.name}> in profile '${prof.name}'${sug ? `; did you mean <${sug.name}>?` : '.'}${isServer ? ' It is a server setting: move it to the top level of config.xml.' : ''} Loading the users config fails with UNKNOWN_SETTING.`,
-            [isServer ? ref.server(s.name) : ref.session(sug ? sug.name : s.name), uref]);
+          const loc = sug || isServer ? null : whereValid(ctx, s);
+          add('error', 'unknown-setting', s, `Unknown setting <${s.name}> in profile '${prof.name}'${sug ? `; did you mean <${sug.name}>?` : '.'}${isServer ? ' It is a server setting: move it to the top level of config.xml.' : loc ? loc.msg : ''} Loading the users config fails with UNKNOWN_SETTING.`,
+            [isServer ? ref.server(s.name) : ref.session(sug ? sug.name : s.name), uref, ...(loc ? loc.refs : [])], { fix: sug ? { kind: 'rename', to: sug.name } : isServer ? { kind: 'move', to: [''] } : loc ? { kind: 'move', to: loc.parents } : undefined });
           continue;
         }
         if (r.custom) continue;
-        ctx.recognized.push({ scope: `profile ${prof.name}`, name: r.name, type: r.def.t, def: r.def.d, value: textOf(s) ?? '', line: s.line, url: ref.session(r.name).url, desc: r.def.desc });
-        if (r.def.obsolete) add('info', 'obsolete', s, `<${s.name}> is obsolete and has no effect.`, [ref.session(r.name)]);
+        ctx.recognized.push({ scope: `profile ${prof.name}`, name: r.name, type: r.def.t, def: r.def.d, value: textOf(s) ?? '', line: s.line, file: s.textFile || s.file, url: ref.session(r.name).url, desc: r.def.desc });
+        lifecycle(ctx, s, 'setting', r.name, r.def, ref.session(r.name), 'profile');
         if (r.name !== s.name) add('info', 'alias', s, `<${s.name}> is an alias of <${r.name}>.`, [ref.session(r.name)]);
         typeCheck(ctx, s, r.def.t, {}, [ref.session(r.name)]);
       }
@@ -657,12 +767,29 @@ function checkConstraints(ctx, cons, customPrefixes) {
 function validIpOrCidr(v) {
   const [addr, bits, ...rest] = v.split('/');
   if (rest.length) return false;
-  const v4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(addr);
-  const v6 = !v4 && /^[0-9a-fA-F:.]+$/.test(addr) && addr.includes(':') && (addr.match(/::/g) || []).length <= 1;
+  const v4 = isIPv4(addr);
+  const v6 = !v4 && isIPv6(addr);
   if (!v4 && !v6) return false;
   if (bits === undefined) return true;
   if (/^\d+$/.test(bits)) return Number(bits) <= (v4 ? 32 : 128);
-  return v4 && /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(bits); // netmask form
+  return v4 && isIPv4(bits); // netmask form
+}
+
+// ------------------------------------------------------------------ host and address values
+// Elements whose value is a single host: an IP address, or a DNS name where allowed.
+const HOST_KEYS = { listen_host: true, interserver_listen_host: true, interserver_http_host: true, host: true, hostname: true };
+function checkHosts(ctx) {
+  walk(ctx.cfg, (n) => {
+    if (!HOST_KEYS[n.name] || n.children.length || ctx.hasSubst(n)) return;
+    const v = textOf(n);
+    if (!v || /[{}$]/.test(v)) return;          // empty (reported elsewhere) or macro / env placeholder
+    const path = ctx.relPath(n);
+    if (path.includes('networks')) return;       // users networks: host is matched as given; ip is checked separately
+    const r = checkHost(v.trim());
+    if (r.ok) return;
+    const top = path[0] === n.name ? n.name : path[0];
+    ctx.add('error', 'bad-address', ctx.valueNode(n), `<${n.name}>: ${r.msg}`, [path[0] === 'keeper_server' ? ref.keeper() : ref.server(top)]);
+  });
 }
 
 // ------------------------------------------------------------------ remote_servers — mirrors Cluster.cpp
@@ -803,6 +930,7 @@ function checkStorage(ctx) {
       if (t && textOf(t) === 'object_storage' && !child(d, 'object_storage_type')) ctx.add('error', 'disk-ost', d, 'Disk type object_storage requires <object_storage_type>.', [dref]);
       const p = child(d, 'path');
       if (p && textOf(p) && (!t || textOf(t) === 'local') && !textOf(p).endsWith('/')) ctx.add('error', 'disk-path', ctx.valueNode(p), `Disk '${d.name}' path must end with '/'.`, [dref]);
+      checkObjectDisk(ctx, d, t ? textOf(t) : null, dref);
       for (const ref_ of ['disk']) {
         const inner = child(d, ref_);
         if (inner && textOf(inner) && !diskNames.has(textOf(inner))) ctx.add('warning', 'disk-ref', ctx.valueNode(inner), `Disk '${d.name}' wraps disk '${textOf(inner)}', which is not defined in this file.`, [dref]);
@@ -825,6 +953,116 @@ function checkStorage(ctx) {
   }
 }
 
+/** Mirrors CombinedRotateStrategy::parseRotation; returns an explanation or null when valid. */
+function rotationError(r) {
+  if (r === 'never') return null;
+  let pos = 0;
+  const ws = () => { while (pos < r.length && /\s/.test(r[pos])) pos++; };
+  const size = () => {
+    const save = pos; ws();
+    let n = ''; while (pos < r.length && /\d/.test(r[pos])) n += r[pos++];
+    ws(); let unit = ''; while (pos < r.length && /[A-Za-z]/.test(r[pos])) unit += r[pos++];
+    ws();
+    const ok = Number(n) > 0 && (['K', 'M', 'G'].includes(unit) || (unit === '' && (pos === r.length || r[pos] === ',')));
+    if (!ok) { pos = save; return { ok: false, unit }; }
+    ws(); if (r[pos] === ',') pos++;
+    return { ok: true };
+  };
+  const interval = () => {
+    const save = pos; ws();
+    while (pos < r.length && /\d/.test(r[pos])) pos++;
+    ws(); let unit = ''; while (pos < r.length && /[A-Za-z]/.test(r[pos])) unit += r[pos++];
+    if (!['daily', 'weekly', 'monthly', 'seconds', 'milliseconds', 'minutes', 'hours', 'days', 'weeks', 'months'].includes(unit)) { pos = save; return false; }
+    ws(); if (r[pos] === ',') pos++;
+    return true;
+  };
+  const time = () => {
+    const c = r.indexOf(':', pos);
+    if (c < 0) return false;
+    const comma = r.indexOf(',', c + 1);
+    pos = comma < 0 ? r.length : comma + 1;
+    return true;
+  };
+  let sz = size();
+  const iv = interval();
+  const tm = time();
+  if (!sz.ok) { const s2 = size(); if (s2.ok) sz = s2; }
+  ws();
+  if ((!sz.ok && !iv && !tm) || pos !== r.length) {
+    const unit = /^\s*\d+\s*([A-Za-z]+)/.exec(r)?.[1];
+    if (unit && !['K', 'M', 'G'].includes(unit) && /^[kmgt]i?b?$|^[KMGT]i?B$|^[KMGT]i$/i.test(unit))
+      return `uses the unit '${unit}'; log rotation sizes accept only K, M or G (uppercase, no "B"), e.g. 100M.`;
+    return 'is not a valid rotation: use <size>[K|M|G] (e.g. 100M), an interval (daily, weekly, monthly, <n> minutes|hours|days|weeks|months), [<size>,]<interval>, a time ([day,][hh]:mm) or never.';
+  }
+  return null;
+}
+
+const OBJECT_TYPES = { s3: 's3', s3_plain: 's3', s3_plain_rewritable: 's3', azure_blob_storage: 'azure', azure: 'azure' };
+function checkObjectDisk(ctx, d, type, dref) {
+  const ost = textOf(child(d, 'object_storage_type'));
+  const kind = OBJECT_TYPES[type] || (type === 'object_storage' ? OBJECT_TYPES[ost] : null);
+  const has = (k) => !!child(d, k);
+  const val = (k) => (textOf(child(d, k)) || '').trim();
+  if (kind === 's3') {
+    if (!has('endpoint')) ctx.add('error', 's3-endpoint', d, `S3 disk '${d.name}' has no <endpoint> (the bucket URL, e.g. https://bucket.s3.amazonaws.com/root/).`, [dref]);
+    else if (val('endpoint') && !/^(https?|s3):\/\//i.test(val('endpoint')) && !ctx.hasSubst(child(d, 'endpoint')))
+      ctx.add('error', 's3-endpoint-url', ctx.valueNode(child(d, 'endpoint')), `<endpoint> '${val('endpoint')}' is not an http(s) or s3:// URL.`, [dref]);
+    const a = has('access_key_id'), b = has('secret_access_key');
+    if (a !== b) ctx.add('error', 's3-creds', child(d, a ? 'access_key_id' : 'secret_access_key'), `S3 disk '${d.name}' sets ${a ? 'access_key_id' : 'secret_access_key'} without ${a ? 'secret_access_key' : 'access_key_id'}; both are needed for static credentials.`, [dref]);
+    if (a && b && val('use_environment_credentials') && /^(1|true)$/i.test(val('use_environment_credentials')))
+      ctx.add('info', 's3-creds-both', child(d, 'use_environment_credentials'), 'Both static keys and use_environment_credentials are set; the static keys take precedence.', [dref]);
+  }
+  if (kind === 'azure' && !has('storage_account_url') && !has('connection_string') && !has('endpoint'))
+    ctx.add('error', 'azure-endpoint', d, `Azure disk '${d.name}' needs <endpoint>, <storage_account_url> or <connection_string>.`, [dref]);
+  if (type === 'encrypted') {
+    if (!has('disk')) ctx.add('error', 'enc-disk', d, `Encrypted disk '${d.name}' needs <disk>, the disk it wraps.`, [dref, ref.source('src/Disks/DiskEncrypted.cpp', 'DiskEncrypted.cpp')]);
+    const alg = (val('algorithm') || 'aes_128_ctr').toLowerCase();
+    const sizes = { aes_128_ctr: 16, aes_192_ctr: 24, aes_256_ctr: 32 };
+    if (has('algorithm') && !sizes[alg]) ctx.add('error', 'enc-alg', ctx.valueNode(child(d, 'algorithm')), `Encryption algorithm '${val('algorithm')}' is not supported; use aes_128_ctr, aes_192_ctr or aes_256_ctr.`, [dref]);
+    if (sizes[alg]) checkKeys(ctx, d, sizes[alg], alg, [dref, ref.source('src/IO/FileEncryptionCommon.cpp', 'FileEncryptionCommon.cpp')]);
+    const p = child(d, 'path');
+    if (p && textOf(p) && !textOf(p).endsWith('/')) ctx.add('error', 'enc-path', ctx.valueNode(p), `Encrypted disk '${d.name}' path must end with '/'.`, [dref]);
+  }
+}
+
+/** key / key_hex children of an encryption section must decode to exactly `bytes` bytes. */
+function checkKeys(ctx, sec, bytes, alg, refs) {
+  const keys = sec.children.filter((c) => /^key(_hex)?$/.test(c.name));
+  const ids = new Map();
+  for (const k of keys) {
+    if (ctx.hasSubst(k) || k.attrs.has('encrypted_by')) continue;
+    const v = textOf(k) ?? '';
+    const hex = k.name === 'key_hex';
+    if (hex && (!/^[0-9a-fA-F]*$/.test(v) || v.length % 2)) { ctx.add('error', 'enc-key-hex', ctx.valueNode(k), `<key_hex> must be an even number of hex digits ("Cannot read key_hex").`, refs); continue; }
+    const len = hex ? v.length / 2 : new TextEncoder().encode(v).length;
+    if (len !== bytes) ctx.add('error', 'enc-key-size', ctx.valueNode(k), `${alg} needs a ${bytes}-byte key (${bytes * 2} hex digits in <key_hex>); this key is ${len} bytes.`, refs);
+    const id = k.attrs.get('id')?.value ?? '0';
+    if (ids.has(id)) ctx.add('error', 'enc-key-id', k, `Two keys use id ${id} ("Multiple keys have the same ID").`, refs);
+    ids.set(id, k);
+  }
+  const cur = child(sec, 'current_key_id');
+  if (cur && textOf(cur) && !ids.has(textOf(cur).trim()) && keys.length && !keys.some((k) => ctx.hasSubst(k))) ctx.add('error', 'enc-current-key', ctx.valueNode(cur), `current_key_id ${textOf(cur).trim()} matches no key ("Not found a key with the current ID").`, refs);
+  else if (!cur && ids.size > 1) ctx.add('error', 'enc-current-key', sec, `<${sec.name}> has several keys but no <current_key_id>.`, refs);
+  return keys.length;
+}
+
+function checkEncryptionCodecs(ctx) {
+  const ec = child(ctx.cfg, 'encryption_codecs');
+  if (!ec || ctx.hasSubst(ec)) return;
+  const refs = [ref.server('encryption_codecs'), ref.source('src/Compression/CompressionCodecEncrypted.cpp', 'CompressionCodecEncrypted.cpp')];
+  for (const sec of ec.children) {
+    const bytes = { aes_128_gcm_siv: 16, aes_256_gcm_siv: 32 }[sec.name];
+    if (!bytes) { unknownChild(ctx, sec, ['aes_128_gcm_siv', 'aes_256_gcm_siv'], refs); continue; }
+    if (!checkKeys(ctx, sec, bytes, sec.name, refs) && !ctx.hasSubst(sec)) ctx.add('error', 'enc-no-key', sec, `<${sec.name}> has no <key> or <key_hex> ("No keys, an encryption needs keys to work").`, refs);
+    const nonce = child(sec, 'nonce_hex') || child(sec, 'nonce');
+    if (nonce && textOf(nonce)) {
+      const n = textOf(nonce);
+      const len = nonce.name === 'nonce_hex' ? n.length / 2 : new TextEncoder().encode(n).length;
+      if (len !== 12) ctx.add('error', 'enc-nonce', ctx.valueNode(nonce), `The nonce must be 12 bytes; this one is ${len}.`, refs);
+    }
+  }
+}
+
 // ------------------------------------------------------------------ logger
 function checkLogger(ctx) {
   const lg = child(ctx.cfg, 'logger');
@@ -839,6 +1077,20 @@ function checkLogger(ctx) {
       ctx.add('error', 'log-level', ctx.valueNode(c), `'${textOf(c)}' is not a valid log level; allowed: ${LOGGER_LEVELS.join(', ')}.`, [dref]);
     else if (/(^level$|_level$)/.test(c.name) && textOf(c) && textOf(c) !== textOf(c).toLowerCase())
       ctx.add('info', 'log-level-case', ctx.valueNode(c), `Log level '${textOf(c)}' is usually written in lowercase.`, [dref]);
+  }
+  // Rotation and purge values are handed to Poco's FileChannel as raw strings and parsed there at startup.
+  const rot = child(lg, 'rotation') || child(lg, 'size');
+  if (rot && textOf(rot) && !ctx.hasSubst(rot)) {
+    const err = rotationError(textOf(rot).trim());
+    if (err) ctx.add('error', 'logger-rotation', ctx.valueNode(rot), `<${rot.name}> '${textOf(rot).trim()}' ${err} The server fails to start ("Invalid rotation format").`, [dref, ref.source('base/poco/Foundation/include/Poco/CombinedRotateStrategy.h', 'CombinedRotateStrategy.h')]);
+  }
+  if (child(lg, 'rotation') && child(lg, 'size')) ctx.add('info', 'logger-size-ignored', child(lg, 'size'), '<size> is ignored because <rotation> is set.', [dref, ref.source('src/Loggers/Loggers.cpp', 'Loggers.cpp')]);
+  const cnt = child(lg, 'count');
+  if (cnt && textOf(cnt) != null && !ctx.hasSubst(cnt)) {
+    const v = textOf(cnt).trim();
+    if (/^none$/i.test(v) || v === '') ctx.add('warning', 'logger-count-none', ctx.valueNode(cnt), `<count> '${v || '(empty)'}' disables purging: rotated log files are never deleted.`, [dref]);
+    else if (!/^\s*[1-9]\d*/.test(v)) ctx.add('error', 'logger-count', ctx.valueNode(cnt), `<count> '${v}' must start with a positive number; Poco reads leading digits and rejects 0 ("Zero is not valid purge age"), so the server fails to start.`, [dref, ref.source('base/poco/Foundation/src/FileChannel.cpp', 'FileChannel.cpp')]);
+    else if (!/^\d+$/.test(v)) ctx.add('warning', 'logger-count-trailing', ctx.valueNode(cnt), `<count> '${v}': only the leading number is used.`, [dref]);
   }
   const lv = child(lg, 'levels');
   if (lv) {
@@ -881,13 +1133,14 @@ function checkMisc(ctx) {
       const name = schema.mergeTree[c.name] ? c.name : schema.mergeTreeAliases[c.name];
       if (!name) {
         const s = suggest(c.name, Object.keys(schema.mergeTree));
-        add('error', 'unknown-mergetree', c, `Unknown MergeTree setting <${c.name}> in <${sec.name}>${s ? `; did you mean <${s.name}>?` : ''}. The server refuses to start (UNKNOWN_SETTING "in MergeTree config").`,
-          [ref.server(sec.name), ref.source(SRC.mergeTree, 'MergeTreeSettings.cpp (loadFromConfig)')]);
+        const loc = s ? null : whereValid(ctx, c);
+        add('error', 'unknown-mergetree', c, `Unknown MergeTree setting <${c.name}> in <${sec.name}>${s ? `; did you mean <${s.name}>?` : ''}. The server refuses to start (UNKNOWN_SETTING "in MergeTree config").${loc ? loc.msg : ''}`,
+          [ref.server(sec.name), ref.source(SRC.mergeTree, 'MergeTreeSettings.cpp (loadFromConfig)'), ...(loc ? loc.refs : [])], { fix: s ? { kind: 'rename', to: s.name } : loc ? { kind: 'move', to: loc.parents } : undefined });
         continue;
       }
       const def = schema.mergeTree[name];
-      ctx.recognized.push({ scope: sec.name, name, type: def.t, def: def.d, value: textOf(c) ?? '', line: c.line, url: ref.mergeTree(name).url, desc: def.desc });
-      if (def.obsolete) add('info', 'obsolete', c, `<${c.name}> is obsolete and has no effect.`, [ref.mergeTree(name)]);
+      ctx.recognized.push({ scope: sec.name, name, type: def.t, def: def.d, value: textOf(c) ?? '', line: c.line, file: c.textFile || c.file, url: ref.mergeTree(name).url, desc: def.desc });
+      lifecycle(ctx, c, 'MergeTree setting', name, def, ref.mergeTree(name), 'mergetree');
       typeCheck(ctx, c, def.t, {}, [ref.mergeTree(name)]);
     }
   }
