@@ -6,7 +6,7 @@ import { toXml, toYaml, formatYamlDoc } from './format.js';
 import { SAMPLES } from './samples.js';
 import { knownVersions } from './versions.js';
 import { highlight } from './highlight.js';
-import { moveElement } from './fix.js';
+import { moveElement, unwrapLines } from './fix.js';
 import { toMarkdown, toJson } from './report.js';
 import { shareableState, encodeState, decodeState } from './share.js';
 import { contextPath, lookup, complete } from './assist.js';
@@ -391,6 +391,7 @@ function renderFindings() {
 const moveTargets = (f) => (f.fix.kind === 'move' && f.code !== 'unknown-setting' ? f.fix.to.filter((p) => !p.includes('<')).slice(0, 3) : []);
 
 function fixButton(f) {
+  if (f.fix?.kind === 'unwrap') return '<button class="btn small" type="button" data-fix>Join wrapped lines</button>';
   if (!f.fix || !f.fix.from || !f.file) return '';
   if (f.fix.kind === 'rename') return `<button class="btn small" type="button" data-fix>Rename to &lt;${esc(f.fix.to)}&gt;</button>`;
   const label = (p) => (p ? p.split('.').map((x) => `&lt;${esc(x)}&gt;`).join(' › ') : 'top level');
@@ -400,6 +401,14 @@ function fixButton(f) {
 /** Rename the element on the finding's line, in its own file (XML open/close tags or a YAML key), or move it
  *  under another section (`dest`). */
 function applyFix(f, dest) {
+  if (f.fix.kind === 'unwrap') {
+    const file = f.file ? state.files.find((x) => x.path === f.file) : activeFile();
+    if (!file) return;
+    file.text = unwrapLines(file.text);
+    state.active = state.files.indexOf(file);
+    showActive();
+    return;
+  }
   const i = state.files.findIndex((x) => x.path === f.file);
   if (i < 0) return;
   const file = state.files[i];

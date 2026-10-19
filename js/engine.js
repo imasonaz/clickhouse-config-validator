@@ -1,6 +1,7 @@
 // Entry point shared by the UI and the tests: detect format, parse, validate.
 
 import { parseXml, XmlError } from './xml.js';
+import { findWrappedLines } from './fix.js';
 import { parseYaml, YamlError } from './tree.js';
 import { validate } from './validate.js';
 import { setSchema, ref, SRC } from './docs.js';
@@ -18,6 +19,9 @@ export function analyze(text, { schema, mode = 'auto', format = 'auto', version 
   const fmt = format === 'auto' ? detectFormat(text) : format;
   const src = text.replace(/^﻿/, '');
   if (!src.trim()) return { format: fmt, doc: null, findings: [], mode, recognized: [], empty: true };
+  const wraps = fmt === 'xml' ? findWrappedLines(src) : [];
+  const wrapFinding = (sev) => (wraps.length ? [{ sev, code: 'hard-wrap', line: wraps[0], col: 1, path: '', fix: { kind: 'unwrap' }, refs: [],
+    msg: `${wraps.length === 1 ? 'This line looks' : `${wraps.length} lines look`} hard-wrapped: a long line was split mid-tag or mid-value when it was copied (from a terminal, email or ticket), at line${wraps.length === 1 ? '' : 's'} ${wraps.slice(0, 6).join(', ')}${wraps.length > 6 ? '…' : ''}. Join the pieces back together before using this file.` }] : []);
   let doc;
   try {
     doc = fmt === 'xml' ? parseXml(src) : parseYaml(src);
@@ -28,19 +32,20 @@ export function analyze(text, { schema, mode = 'auto', format = 'auto', version 
         : [ref.configFiles('example-1', 'YAML examples'), { label: 'YAML 1.2 spec', url: 'https://yaml.org/spec/1.2.2/' }];
       return {
         format: fmt, doc: null, mode, recognized: [], parseError: true,
-        findings: [{ sev: 'error', code: 'syntax', msg: `${fmt.toUpperCase()} syntax error: ${e.message}. ClickHouse cannot load this file.`, line: e.line || 1, col: e.col || 1, path: '', refs }],
+        findings: [...wrapFinding('error'), { sev: 'error', code: 'syntax', msg: `${fmt.toUpperCase()} syntax error: ${e.message}. ClickHouse cannot load this file.`, line: e.line || 1, col: e.col || 1, path: '', refs }],
       };
     }
     throw e;
   }
   const res = validate(doc, { schema, mode, format: fmt, version, featureTier });
+  res.findings.unshift(...wrapFinding('warning'));
   return { format: fmt, doc, ...res };
 }
 
 // ---------------------------------------------------------------- multi-file (config.d / users.d) analysis
 
 // Findings that only make sense against the file as written (attributes and syntax vanish once merged).
-const FILE_LOCAL = new Set(['syntax', 'root-yandex', 'root-name', 'yaml-explicit-root', 'yaml-dup-key', 'yaml-merge-key', 'yaml-complex-key', 'bad-name',
+const FILE_LOCAL = new Set(['syntax', 'hard-wrap', 'root-yandex', 'root-name', 'yaml-explicit-root', 'yaml-dup-key', 'yaml-merge-key', 'yaml-complex-key', 'bad-name',
   'unknown-attr', 'multi-subst', 'yaml-attr', 'include-children', 'include-no-subst', 'replace-remove', 'replace-order', 'subst-has-value', 'mixed-content']);
 const MAIN_NAMES = ['config.xml', 'config.yaml', 'config.yml', 'keeper_config.xml', 'keeper_config.yaml', 'keeper_config.yml', 'users.xml', 'users.yaml', 'users.yml'];
 const fmtOf = (path, text, fmt) => (fmt && fmt !== 'auto' ? fmt : /\.ya?ml$/i.test(path) ? 'yaml' : /\.(xml|conf)$/i.test(path) ? 'xml' : detectFormat(text));

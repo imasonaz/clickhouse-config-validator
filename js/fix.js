@@ -97,3 +97,57 @@ function parentKeyLine(lines, li, ind, blank, depth) {
   for (let k = li - 1; k >= 0; k--) if (!blank(lines[k]) && depth(lines[k]) < ind) return k;
   return -1;
 }
+
+// ---------------------------------------------------------------- hard-wrapped XML
+
+// A line that a terminal, email client or ticket tool broke at a fixed width, e.g. "</er" + "rorlog>":
+// it ends inside a tag name, or inside a value whose closing tag is on the next line. Continuation lines
+// start in column 0. A break inside a value is only trusted on a line exactly as long as the longest line
+// (the wrap width), which keeps intentionally multi-line text such as SQL out.
+const OPEN_NAME_TAIL = /<\/?[\w:.-]*$/;
+const OPEN_TEXT_TAIL = /<([\w:.-]+)(?:\s[^<>]*)?>[^<>]*$/;
+
+function continues(acc, next, width) {
+  if (next == null || !next.length || /^\s/.test(next) || next.startsWith('<')) return false;
+  if (OPEN_NAME_TAIL.test(acc)) return /^[\w:.-]*[\s/>]/.test(next) || /^[\w:.-]+$/.test(next);
+  const m = OPEN_TEXT_TAIL.exec(acc);
+  if (!m || width < 40 || acc.length % width !== 0) return false;
+  // The value goes on and is closed by the same element (or the closing tag is itself split again).
+  const c = /^[^<>]*(<\/?[\w:.-]*)/.exec(next);
+  if (!c) return /^[^<>]+$/.test(next);
+  return c[1] === '<' || c[1] === '</' || (`</${m[1]}`.startsWith(c[1]) && c[1].startsWith('</'));
+}
+
+/** Lines (1-based) of hard-wrapped XML whose text continues on the following line. Comments and CDATA are skipped. */
+export function findWrappedLines(text) {
+  const lines = text.split('\n');
+  const width = Math.max(...lines.map((l) => l.replace(/\r$/, '').length));
+  const out = [];
+  let inComment = false;
+  for (let i = 0; i < lines.length; i++) {
+    let l = lines[i].replace(/\r$/, '');
+    const startsInComment = inComment;
+    for (let k = 0; ;) {
+      if (inComment) { const e = l.indexOf('-->', k); if (e < 0) break; inComment = false; k = e + 3; }
+      else { const s = l.indexOf('<!--', k); if (s < 0) break; inComment = true; k = s + 4; }
+    }
+    if (startsInComment || inComment || l.includes('<![CDATA[')) continue;
+    let acc = l, j = i;
+    while (continues(acc, lines[j + 1]?.replace(/\r$/, ''), width)) { out.push(j + 1); acc += lines[j + 1].replace(/\r$/, ''); j++; }
+    i = j;
+  }
+  return out;
+}
+
+/** Join every hard-wrapped line with its continuation. */
+export function unwrapLines(text) {
+  const wraps = new Set(findWrappedLines(text));
+  if (!wraps.size) return text;
+  const lines = text.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (out.length && wraps.has(i)) out[out.length - 1] = out[out.length - 1].replace(/\r$/, '') + lines[i];
+    else out.push(lines[i]);
+  }
+  return out.join('\n');
+}

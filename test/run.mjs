@@ -264,6 +264,19 @@ for (const [f, want] of Object.entries(expect)) {
   check('mergetree-at-root offers move', at.findings.some((f) => f.code === 'mergetree-at-root' && f.fix?.kind === 'move'));
 }
 
+// Hard-wrapped paste.
+{
+  const { findWrappedLines, unwrapLines } = await import('../js/fix.js');
+  const w = fx('wrapped_keeper.xml');
+  check('hard wrap found', findWrappedLines(w).join() === '5,14,16', findWrappedLines(w).join());
+  const r0 = analyze(w, { schema });
+  check('hard wrap finding on parse error', r0.findings[0].code === 'hard-wrap' && r0.findings[0].fix.kind === 'unwrap');
+  const r1 = analyze(unwrapLines(w), { schema });
+  check('unwrapped parses', !r1.parseError && !codes(r1).includes('hard-wrap'), codes(r1).join());
+  check('multi-line SQL not treated as wrap', !findWrappedLines('<query>SELECT 1\nFROM t</query>\n<x>' + 'y'.repeat(60) + '</x>').length);
+  check('clean files have no wraps', ['config.xml', 'keeper_config.xml', 'users.xml', 'bad_server.xml'].every((f) => !findWrappedLines(fx(f)).length));
+}
+
 // Syntax colouring must reproduce the text exactly.
 {
   const { highlight } = await import('../js/highlight.js');
