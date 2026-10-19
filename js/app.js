@@ -85,7 +85,7 @@ async function init() {
   if (!restored) loadSample(SAMPLES[0].id);
   else showActive();
 
-  els.source.addEventListener('input', (e) => { activeFile().text = els.source.value; activeLine = null; schedule(); if (e.inputType !== 'deleteContentBackward' || !els.ac.hidden) suggestAt(); });
+  els.source.addEventListener('input', (e) => { activeFile().text = els.source.value; activeLine = null; schedule(); if (!editing && (e.inputType !== 'deleteContentBackward' || !els.ac.hidden)) suggestAt(); });
   els.source.addEventListener('mousemove', onHover);
   els.source.addEventListener('mouseleave', () => hideHover(300));
   els.hovercard.addEventListener('mouseenter', () => clearTimeout(hoverTimer));
@@ -404,9 +404,7 @@ function applyFix(f, dest) {
   if (f.fix.kind === 'unwrap') {
     const file = f.file ? state.files.find((x) => x.path === f.file) : activeFile();
     if (!file) return;
-    file.text = unwrapLines(file.text);
-    state.active = state.files.indexOf(file);
-    showActive();
+    commitEdit(state.files.indexOf(file), unwrapLines(file.text), f.line);
     return;
   }
   const i = state.files.findIndex((x) => x.path === f.file);
@@ -414,21 +412,18 @@ function applyFix(f, dest) {
   const file = state.files[i];
   const { from, to } = f.fix;
   const fmt = file.format && file.format !== 'auto' ? file.format : /\.ya?ml$/i.test(file.path) ? 'yaml' : /\.(xml|conf)$/i.test(file.path) ? 'xml' : detectFormat(file.text);
-  let done = false;
+  let out = null;
   if (dest != null) {
     const out = moveElement(file.text, fmt, f.line, from, dest);
     if (out == null) { toast("Couldn't move it automatically here; edit it by hand."); return; }
-    file.text = out;
-    state.active = i;
-    showActive();
     const at = out.split('\n').findIndex((l) => new RegExp(`^\\s*(<${escRe(from)}[\\s/>]|["']?${escRe(from)}["']?\\s*:)`).test(l));
-    if (at >= 0) jumpTo(at + 1);
+    commitEdit(i, out, at >= 0 ? at + 1 : null);
     return;
   }
   if (fmt === 'yaml') {
     const lines = file.text.split('\n');
     const re = new RegExp(`^(\\s*(?:-\\s+)?)(["']?)${escRe(from)}\\2(\\s*:)`);
-    if (re.test(lines[f.line - 1])) { lines[f.line - 1] = lines[f.line - 1].replace(re, `$1$2${to}$2$3`); file.text = lines.join('\n'); done = true; }
+    if (re.test(lines[f.line - 1])) { lines[f.line - 1] = lines[f.line - 1].replace(re, `$1$2${to}$2$3`); out = lines.join('\n'); }
   } else {
     const text = file.text;
     const start = text.split('\n').slice(0, f.line - 1).reduce((a, l) => a + l.length + 1, 0);
@@ -438,22 +433,51 @@ function applyFix(f, dest) {
     if (m) {
       const tagEnd = text.indexOf('>', m.index);
       const selfClosing = text[tagEnd - 1] === '/';
-      let out = text.slice(0, m.index) + `<${to}` + text.slice(m.index + from.length + 1);
+      out = text.slice(0, m.index) + `<${to}` + text.slice(m.index + from.length + 1);
       if (!selfClosing) {
         const close = new RegExp(`</${escRe(from)}\\s*>`, 'g');
         close.lastIndex = m.index + to.length + 1;
         const c = close.exec(out);
         if (c) out = out.slice(0, c.index) + `</${to}>` + out.slice(c.index + c[0].length);
       }
-      file.text = out;
-      done = true;
     }
   }
-  if (!done) return;
-  state.active = i;
-  const line = f.line;
-  showActive();
-  jumpTo(line);
+  if (out != null) commitEdit(i, out, f.line);
+}
+
+/** Show file i and change its text as an edit in the editor, so Ctrl+Z / Ctrl+Y undo and redo quick fixes. */
+function commitEdit(i, next, line) {
+  if (i !== state.active) { state.active = i; showActive(); }
+  editText(next);
+  if (line) jumpTo(line);
+}
+
+// Programmatic edits go through the browser's editing commands, which keep the textarea's undo history
+// (assigning .value would wipe it). Only the changed span is replaced.
+let editing = false;
+function editText(next, start, end) {
+  const ta = els.source, prev = ta.value;
+  if (start == null) {
+    if (next === prev) return;
+    let p = 0;
+    while (p < prev.length && p < next.length && prev[p] === next[p]) p++;
+    let q = 0;
+    while (q < prev.length - p && q < next.length - p && prev[prev.length - 1 - q] === next[next.length - 1 - q]) q++;
+    start = p; end = prev.length - q; next = next.slice(p, next.length - q);
+  }
+  const expected = prev.slice(0, start) + next + prev.slice(end);
+  ta.focus({ preventScroll: true });
+  ta.setSelectionRange(start, end);
+  editing = true;
+  let ok = false;
+  try { ok = next ? document.execCommand('insertText', false, next) : document.execCommand('delete'); } catch { ok = false; }
+  editing = false;
+  if (!ok || ta.value !== expected) {
+    ta.value = expected;
+    ta.setSelectionRange(start + next.length, start + next.length);
+    activeFile().text = expected;
+    schedule();
+  }
 }
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -641,13 +665,17 @@ function onKey(e) {
     if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acceptAc(ac.items[ac.sel]); return; }
     if (e.key === 'Escape') { e.preventDefault(); closeAc(); return; }
   }
+  // Ctrl+Y redo everywhere (browsers only bind it on Windows); Ctrl+Z / Ctrl+Shift+Z are native.
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'y') {
+    e.preventDefault();
+    document.execCommand('redo');
+    return;
+  }
   if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault();
     const ta = els.source, s = ta.selectionStart;
     const unit = (last && last.format === 'yaml') ? '  ' : '    ';
-    ta.setRangeText(unit, s, ta.selectionEnd, 'end');
-    activeFile().text = ta.value;
-    schedule();
+    editText(unit, s, ta.selectionEnd);
   }
 }
 
@@ -783,11 +811,11 @@ function acceptAc(name) {
     const hasClose = /^[^<\n]*>/.test(after);
     insert = hasClose ? name : `${name}></${name}>`;
     caret = ac.start + (hasClose ? name.length : name.length + 1);
-    ta.setRangeText(insert, ac.start, ac.end, 'end');
+    editText(insert, ac.start, ac.end);
   } else {
     insert = `${name}: `;
     caret = ac.start + insert.length;
-    ta.setRangeText(insert, ac.start, ac.end, 'end');
+    editText(insert, ac.start, ac.end);
   }
   ta.setSelectionRange(caret, caret);
   closeAc();

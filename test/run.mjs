@@ -256,6 +256,11 @@ for (const [f, want] of Object.entries(expect)) {
   check('move xml creates section', mx === '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <coordination_settings>\n            <force_sync>false</force_sync>\n        </coordination_settings>\n    </keeper_server>\n</clickhouse>\n', mx);
   const r = analyze(mx, { schema, mode: 'keeper' });
   check('moved setting recognised', !codes(r).includes('unknown-key'), codes(r).join());
+  const top = '<clickhouse>\n    <logger/>\n    <keeper_server>\n        <listen_host>::</listen_host>\n    </keeper_server>\n    <path>/x/</path>\n</clickhouse>\n';
+  check('move to top level lands beside its section', moveElement(top, 'xml', 4, 'listen_host', '') === '<clickhouse>\n    <logger/>\n    <listen_host>::</listen_host>\n    <keeper_server>\n    </keeper_server>\n    <path>/x/</path>\n</clickhouse>\n');
+  const early = '<clickhouse>\n    <merge_tree>\n        <a>1</a>\n    </merge_tree>\n    <b>2</b>\n</clickhouse>\n';
+  check('move into an earlier section', moveElement(early, 'xml', 5, 'b', 'merge_tree') === '<clickhouse>\n    <merge_tree>\n        <a>1</a>\n        <b>2</b>\n    </merge_tree>\n</clickhouse>\n');
+  check('move yaml to top level', moveElement('logger:\n  level: trace\nkeeper_server:\n  tcp_port: 1\n  listen_host: "::"\n', 'yaml', 5, 'listen_host', '') === 'logger:\n  level: trace\nlisten_host: "::"\nkeeper_server:\n  tcp_port: 1\n');
   check('move xml no-op refused', moveElement(x, 'xml', 4, 'force_sync', 'keeper_server') === null);
   const y = 'keeper_server:\n  tcp_port: 9181\n  force_sync: false\n  coordination_settings:\n    operation_timeout_ms: 10000\n';
   check('move yaml into existing section', moveElement(y, 'yaml', 3, 'force_sync', 'keeper_server.coordination_settings') === 'keeper_server:\n  tcp_port: 9181\n  coordination_settings:\n    operation_timeout_ms: 10000\n    force_sync: false\n');
@@ -273,6 +278,11 @@ for (const [f, want] of Object.entries(expect)) {
   check('hard wrap finding on parse error', r0.findings[0].code === 'hard-wrap' && r0.findings[0].fix.kind === 'unwrap');
   const r1 = analyze(unwrapLines(w), { schema });
   check('unwrapped parses', !r1.parseError && !codes(r1).includes('hard-wrap'), codes(r1).join());
+  for (const [name, v] of [['trailing spaces', w.replace(/\n/g, '  \n')], ['CRLF', w.replace(/\n/g, '\r\n')], ['indented paste', w.split('\n').map((l) => (l ? '    ' + l : l)).join('\n')]]) {
+    const u = unwrapLines(v);
+    check(`hard wrap with ${name}`, findWrappedLines(v).join() === '5,14,16' && !analyze(u, { schema }).parseError, findWrappedLines(v).join());
+  }
+  check('CRLF kept when joining', unwrapLines(w.replace(/\n/g, '\r\n')).split('\n').every((l) => !l || l.endsWith('\r')));
   check('multi-line SQL not treated as wrap', !findWrappedLines('<query>SELECT 1\nFROM t</query>\n<x>' + 'y'.repeat(60) + '</x>').length);
   check('clean files have no wraps', ['config.xml', 'keeper_config.xml', 'users.xml', 'bad_server.xml'].every((f) => !findWrappedLines(fx(f)).length));
 }

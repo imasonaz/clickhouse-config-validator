@@ -44,12 +44,25 @@ function moveXml(text, line, name, segs) {
   const wrap = segs.slice(i);
   const out = [...wrap.map((s, k) => `${ind(k)}<${s}>`), ...body.map((l) => (l ? ind(wrap.length) + l : l)), ...wrap.map((s, k) => `${ind(k)}</${s}>`).reverse()];
 
-  const cs = t.closeStart;
-  const ownLine = !text.slice(lineStart(cs), cs).trim();
-  const ins = ownLine ? { at: lineStart(cs), str: out.join('\n') + '\n' } : { at: cs, str: '\n' + out.join('\n') + '\n' + tIndent };
-  const del = alone ? { from: ls, to: le < text.length ? le + 1 : le } : { from: node.start, to: node.end };
   const apply = (s, e) => ('str' in e ? s.slice(0, e.at) + e.str + s.slice(e.at) : s.slice(0, e.from) + s.slice(e.to));
-  return ins.at >= del.to ? apply(apply(text, ins), del) : apply(apply(text, del), { ...ins, at: ins.at - (del.to - del.from) });
+  // Moving outwards (e.g. to the top level): put it next to the section it came from, not at the end.
+  let anc = node;
+  while (anc.parent && anc.parent !== t) anc = anc.parent;
+  if (anc === node && node.parent === t) {
+    return alone ? text.slice(0, ls) + out.join('\n') + text.slice(le) : text.slice(0, node.start) + out.join('\n').trimStart() + text.slice(node.end);
+  }
+  let ins;
+  if (anc.parent === t) {
+    const own = !text.slice(lineStart(anc.start), anc.start).trim();
+    ins = own ? { at: lineStart(anc.start), str: out.join('\n') + '\n' } : { at: anc.start, str: out.join('\n').trimStart() + '\n' + tIndent + unit };
+  } else {
+    const cs = t.closeStart;
+    const ownLine = !text.slice(lineStart(cs), cs).trim();
+    ins = ownLine ? { at: lineStart(cs), str: out.join('\n') + '\n' } : { at: cs, str: '\n' + out.join('\n') + '\n' + tIndent };
+  }
+  const del = alone ? { from: ls, to: le < text.length ? le + 1 : le } : { from: node.start, to: node.end };
+  // Apply the later edit first so the earlier offsets stay valid.
+  return ins.at >= del.to ? apply(apply(text, ins), del) : apply(apply(text, del), ins);
 }
 
 function moveYaml(text, line, name, segs) {
@@ -85,9 +98,20 @@ function moveYaml(text, line, name, segs) {
   const unitM = /\n( +)\S/.exec(text);
   const unit = unitM ? ' '.repeat(Math.min(unitM[1].length, 4)) : '  ';
   const base = keyLine < 0 ? '' : ' '.repeat((childIndent(from, to, pInd) ?? pInd + unit.length));
-  const at = keyLine < 0 && i === 0 ? (() => { let e = lines.length; while (e > 0 && !lines[e - 1].trim()) e--; return e; })() : (() => { let e = to; while (e > from && blank(lines[e - 1])) e--; return Math.max(e, from); })();
   const wrap = segs.slice(i);
   const ins = [...wrap.map((s, k) => base + unit.repeat(k) + `${s}:`), ...block.map((l) => (l ? base + unit.repeat(wrap.length) + l : l))];
+  if (li >= from && li < to) {
+    // The node is inside the target (moving outwards): place it beside the entry it came from, or wrap it in place.
+    const ci = childIndent(from, to, pInd);
+    let anc = li;
+    while (anc > from && (blank(lines[anc]) || depth(lines[anc]) !== ci)) anc--;
+    if (anc === li) { lines.splice(li, nEnd - li, ...ins); return lines.join('\n'); }
+    while (anc > from && /^\s*#/.test(lines[anc - 1]) && depth(lines[anc - 1]) === ci) anc--;
+    lines.splice(li, nEnd - li);
+    lines.splice(anc, 0, ...ins);
+    return lines.join('\n');
+  }
+  const at = keyLine < 0 && i === 0 ? (() => { let e = lines.length; while (e > 0 && !lines[e - 1].trim()) e--; return e; })() : (() => { let e = to; while (e > from && blank(lines[e - 1])) e--; return Math.max(e, from); })();
   if (at >= nEnd) { lines.splice(at, 0, ...ins); lines.splice(li, nEnd - li); } else { lines.splice(li, nEnd - li); lines.splice(at, 0, ...ins); }
   return lines.join('\n');
 }
@@ -118,14 +142,22 @@ function continues(acc, next, width) {
   return c[1] === '<' || c[1] === '</' || (`</${m[1]}`.startsWith(c[1]) && c[1].startsWith('</'));
 }
 
+// Lines with trailing whitespace dropped and the paste's common indentation removed, so a block copied
+// with extra indentation (or padded by a terminal) still shows continuation lines in column 0.
+function normalised(text) {
+  const lines = text.split('\n').map((l) => l.replace(/\s+$/, ''));
+  const indent = Math.min(...lines.filter((l) => l).map((l) => /^[ \t]*/.exec(l)[0].length));
+  return { lines: Number.isFinite(indent) && indent ? lines.map((l) => l.slice(indent)) : lines, indent: Number.isFinite(indent) ? indent : 0 };
+}
+
 /** Lines (1-based) of hard-wrapped XML whose text continues on the following line. Comments and CDATA are skipped. */
 export function findWrappedLines(text) {
-  const lines = text.split('\n');
-  const width = Math.max(...lines.map((l) => l.replace(/\r$/, '').length));
+  const { lines } = normalised(text);
+  const width = Math.max(...lines.map((l) => l.length));
   const out = [];
   let inComment = false;
   for (let i = 0; i < lines.length; i++) {
-    let l = lines[i].replace(/\r$/, '');
+    const l = lines[i];
     const startsInComment = inComment;
     for (let k = 0; ;) {
       if (inComment) { const e = l.indexOf('-->', k); if (e < 0) break; inComment = false; k = e + 3; }
@@ -133,7 +165,7 @@ export function findWrappedLines(text) {
     }
     if (startsInComment || inComment || l.includes('<![CDATA[')) continue;
     let acc = l, j = i;
-    while (continues(acc, lines[j + 1]?.replace(/\r$/, ''), width)) { out.push(j + 1); acc += lines[j + 1].replace(/\r$/, ''); j++; }
+    while (continues(acc, lines[j + 1], width)) { out.push(j + 1); acc += lines[j + 1]; j++; }
     i = j;
   }
   return out;
@@ -143,10 +175,11 @@ export function findWrappedLines(text) {
 export function unwrapLines(text) {
   const wraps = new Set(findWrappedLines(text));
   if (!wraps.size) return text;
+  const { indent } = normalised(text);
   const lines = text.split('\n');
   const out = [];
   for (let i = 0; i < lines.length; i++) {
-    if (out.length && wraps.has(i)) out[out.length - 1] = out[out.length - 1].replace(/\r$/, '') + lines[i];
+    if (out.length && wraps.has(i)) out[out.length - 1] = out[out.length - 1].replace(/\s+$/, '') + lines[i].replace(/\s+$/, '').slice(indent) + (lines[i].endsWith('\r') ? '\r' : '');
     else out.push(lines[i]);
   }
   return out.join('\n');
