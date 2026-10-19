@@ -4,7 +4,7 @@ import { pathOf, child, childrenNamed, textOf, walk, getPath } from './tree.js';
 import { ref, SRC } from './docs.js';
 import { checkValue, suggest, SETTING_BOOL, POCO_BOOL } from './types.js';
 import { checkHost, isIPv4, isIPv6 } from './net.js';
-import { cmpVer, addedIn, obsoleteSince, defaultAt, defaultChanges } from './versions.js';
+import { cmpVer, addedIn, obsoleteSince, defaultAt, defaultChanges, removedRange } from './versions.js';
 
 // Attributes ClickHouse's ConfigProcessor understands (configuration-files docs + ConfigProcessor.cpp).
 const PREPROCESSOR_ATTRS = new Set(['replace', 'remove', 'incl', 'from_env', 'from_zk', 'optional', 'merge', 'yaml', 'encrypted_by', 'hide_in_preprocessed']);
@@ -114,8 +114,8 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml', version =
   } else if (doc.meta) {
     const m = doc.meta;
     if (m.explicitClickhouseRoot) {
-      add('warning', 'yaml-explicit-root', m.explicitClickhouseRoot,
-        `Top-level "${m.explicitClickhouseRoot.name}:" key. YAMLParser always wraps the document in a <clickhouse> element, so this key can produce <clickhouse><${m.explicitClickhouseRoot.name}>…, leaving every setting below it unrecognised. The docs describe the key as optional, and the shipped config.yaml.example omits it; check the generated *-preprocessed.xml if in doubt. The rest of this report validates the contents as if the key were absent.`,
+      add('error', 'yaml-explicit-root', m.explicitClickhouseRoot,
+        `Top-level "${m.explicitClickhouseRoot.name}:" key. YAMLParser always wraps the document in a <clickhouse> element, so this key produces <clickhouse><${m.explicitClickhouseRoot.name}>… and every setting below it is ignored (verified with ClickHouse 26.9: http_port under it is not read). Remove the key and de-indent its contents. The rest of this report validates the contents as if the key were absent.`,
         [ref.source(SRC.yamlParser, 'YAMLParser.cpp (buildXMLFromYAMLNode)'), ref.configFiles(null, 'Configuration files'), ref.configFiles('implementation-details', 'Preprocessed files')]);
     }
     for (const d of m.duplicateKeys) add('warning', 'yaml-dup-key', null, `Duplicate key '${d.key}' (first defined on line ${d.first}). Both copies become separate elements; ClickHouse reads only the first for a scalar setting. Use a YAML sequence if repetition is intended.`, [ref.configFiles('example-1', 'YAML examples')], { line: d.line, col: d.col });
@@ -321,16 +321,32 @@ function lifecycle(ctx, node, what, name, def, docRef, kind = '') {
     return;
   }
   const added = addedIn(def);
-  if (ctx.version !== 'latest' && added && cmpVer(added, ctx.version) > 0) {
-    const fail = kind === 'profile' ? 'loading the users config fails with UNKNOWN_SETTING' : kind === 'mergetree' ? 'the server refuses to start (UNKNOWN_SETTING)' : 'it is ignored';
-    ctx.add('error', 'version-too-new', node, `<${node.name}> was added in ${added}; on ${ctx.version} it doesn't exist, so ${fail}.`, refs);
+  if (ctx.version !== 'latest' && added && (added === 'next' || cmpVer(added, ctx.version) > 0)) {
+    const fail = kind === 'profile' ? 'loading the users config fails with UNKNOWN_SETTING' : kind === 'mergetree' || kind === 'coordination' ? `${kind === 'coordination' ? 'Keeper' : 'the server'} refuses to start (UNKNOWN_SETTING)` : 'it is ignored';
+    const when = added === 'next' ? 'is not in any release yet (only in the master sources)' : `was added in ${added}`;
+    ctx.add('error', 'version-too-new', node, `<${node.name}> ${when}; on ${ctx.version} it doesn't exist, so ${fail}.`, refs);
   }
   if (def.tier && !def.obsolete) {
     const t = TIER[def.tier];
     ctx.add(t.sev, `tier-${def.tier.replace('_', '-')}`, node, `<${node.name}> is ${t.text}.`, [...refs, ref.server('allow_feature_tier')]);
-    if (kind && ctx.tierLimit != null && ctx.tierLimit >= t.rank)
+    if ((kind === 'profile' || kind === 'mergetree') && ctx.tierLimit != null && ctx.tierLimit >= t.rank)
       ctx.add('warning', 'tier-blocked', node, `allow_feature_tier is ${ctx.tierLimit}, which rejects changes to ${TIER_NAME[def.tier]} settings like <${node.name}> (it acts like a readonly constraint on them).`, [ref.server('allow_feature_tier')]);
   }
+}
+
+/** For a name that isn't declared any more: whether the target version still has it, and the message to use.
+ *  Returns false when the setting never existed in an indexed release. */
+function removedSetting(ctx, scope, node, what, consequence, refs) {
+  const r = removedRange(ctx.schema, scope, node.name);
+  if (!r) return false;
+  const [first, last] = r;
+  const span = first ? `${first} to ${last}` : `up to ${last}`;
+  if (ctx.version !== 'latest' && cmpVer(ctx.version, last) <= 0 && (!first || cmpVer(ctx.version, first) >= 0)) {
+    ctx.add('info', 'removed-later', node, `<${node.name}> is a ${what} in ${ctx.version} but was removed after ${last} (present in releases ${span}). Remove it before upgrading: ${consequence}.`, refs);
+  } else {
+    ctx.add(consequence.startsWith('it is ignored') ? 'warning' : 'error', 'removed-setting', node, `<${node.name}> was a ${what} in releases ${span} and has been removed, so ${consequence}.`, refs);
+  }
+  return true;
 }
 
 function settingDoc(scope, name) {
@@ -372,17 +388,18 @@ function checkRoot(ctx) {
       continue;
     }
     if (schema.mergeTree[name]) {
-      add('warning', 'mergetree-at-root', n, `<${name}> is a MergeTree setting. Put it under <merge_tree> to change the server-wide default.`, [ref.mergeTree(name), ref.server('merge_tree')]);
+      add('warning', 'mergetree-at-root', n, `<${name}> is a MergeTree setting. Put it under <merge_tree> to change the server-wide default.`, [ref.mergeTree(name), ref.server('merge_tree')], { fix: { kind: 'move', to: ['merge_tree'] } });
       continue;
     }
     if (schema.coordination[name]) {
-      add('warning', 'coord-at-root', n, `<${name}> is a Keeper coordination setting; it belongs in <keeper_server><coordination_settings>.`, [ref.keeperCoordination()]);
+      add('warning', 'coord-at-root', n, `<${name}> is a Keeper coordination setting; it belongs in <keeper_server><coordination_settings>.`, [ref.keeperCoordination()], { fix: { kind: 'move', to: ['keeper_server.coordination_settings'] } });
       continue;
     }
     if (KEEPER_KEYS[name]) {
-      add('warning', 'keeper-at-root', n, `<${name}> is a Keeper setting; it belongs inside <keeper_server>.`, [ref.keeper()]);
+      add('warning', 'keeper-at-root', n, `<${name}> is a Keeper setting; it belongs inside <keeper_server>.`, [ref.keeper()], { fix: { kind: 'move', to: ['keeper_server'] } });
       continue;
     }
+    if (removedSetting(ctx, 'server', n, 'server setting', 'it is ignored', [ref.server(name)])) continue;
     const s = suggest(name, known);
     if (s && s.caseOnly) add('error', 'case', n, `'${name}' should be '${s.name}': configuration keys are case-sensitive.`, [ref.server(s.name)], { fix: { kind: 'rename', to: s.name } });
     else if (s) add('warning', 'unknown-key', n, `Unknown top-level key <${name}>; did you mean <${s.name}>? Unknown keys are silently ignored.`, [ref.server(s.name)], { fix: { kind: 'rename', to: s.name } });
@@ -445,7 +462,7 @@ function checkKeeper(ctx, ks) {
     const def = KEEPER_KEYS[c.name];
     if (!def) {
       if (schema.coordination[c.name]) {
-        add('warning', 'coord-misplaced', c, `<${c.name}> is a coordination setting; move it into <keeper_server><coordination_settings>. Here it is ignored.`, [ref.keeperCoordination()]);
+        add('warning', 'coord-misplaced', c, `<${c.name}> is a coordination setting; move it into <keeper_server><coordination_settings>. Here it is ignored.`, [ref.keeperCoordination()], { fix: { kind: 'move', to: ['keeper_server.coordination_settings'] } });
         continue;
       }
       unknownChild(ctx, c, Object.keys(KEEPER_KEYS), [kref]);
@@ -492,6 +509,7 @@ function checkKeeper(ctx, ks) {
       if (c.name === 'include') continue;
       const def = schema.coordination[c.name];
       if (!def) {
+        if (removedSetting(ctx, 'coordination', c, 'coordination setting', 'Keeper refuses to start (UNKNOWN_SETTING)', [ref.keeperCoordination()])) continue;
         const s = suggest(c.name, names);
         const loc = s ? null : whereValid(ctx, c);
         add('error', 'unknown-coord', c, `Unknown coordination setting <${c.name}>${s ? `; did you mean <${s.name}>?` : ''}. Keeper refuses to start (UNKNOWN_SETTING "in Coordination settings config").${loc ? loc.msg : ''}`,
@@ -499,7 +517,7 @@ function checkKeeper(ctx, ks) {
         continue;
       }
       ctx.recognized.push({ scope: 'coordination', name: `coordination_settings.${c.name}`, type: def.t, def: def.d, value: textOf(c) ?? '', line: c.line, file: c.textFile || c.file, url: ref.keeperCoordination().url, desc: def.desc });
-      lifecycle(ctx, c, 'coordination setting', c.name, def, ref.keeperCoordination());
+      lifecycle(ctx, c, 'coordination setting', c.name, def, ref.keeperCoordination(), 'coordination');
       typeCheck(ctx, c, def.t, {}, [ref.keeperCoordination(), ref.source(SRC.coordination, 'CoordinationSettings.cpp')]);
     }
     const num = (k) => { const n = child(cs, k); const v = n && textOf(n); return v && /^\d+$/.test(v) ? Number(v) : null; };
@@ -662,6 +680,7 @@ function checkUsersFile(ctx) {
         if (s.name === 'constraints' || s.name.startsWith('constraints[')) { checkConstraints(ctx, s, customPrefixes); continue; }
         const r = checkSettingName(s, 'session');
         if (!r) {
+          if (removedSetting(ctx, 'session', s, 'setting', 'loading the users config fails with UNKNOWN_SETTING', [ref.session(s.name), uref])) continue;
           const sug = suggest(s.name, sessionNames);
           const isServer = schema.server[s.name] && !schema.serverProfileAllowlist.includes(s.name);
           const loc = sug || isServer ? null : whereValid(ctx, s);
@@ -1132,6 +1151,7 @@ function checkMisc(ctx) {
       if (c.name === 'include') continue;
       const name = schema.mergeTree[c.name] ? c.name : schema.mergeTreeAliases[c.name];
       if (!name) {
+        if (removedSetting(ctx, 'mergeTree', c, 'MergeTree setting', 'the server refuses to start (UNKNOWN_SETTING)', [ref.server(sec.name)])) continue;
         const s = suggest(c.name, Object.keys(schema.mergeTree));
         const loc = s ? null : whereValid(ctx, c);
         add('error', 'unknown-mergetree', c, `Unknown MergeTree setting <${c.name}> in <${sec.name}>${s ? `; did you mean <${s.name}>?` : ''}. The server refuses to start (UNKNOWN_SETTING "in MergeTree config").${loc ? loc.msg : ''}`,

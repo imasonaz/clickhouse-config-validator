@@ -5,13 +5,15 @@ import { analyze, analyzeSet, detectFormat } from './engine.js';
 import { toXml, toYaml, formatYamlDoc } from './format.js';
 import { SAMPLES } from './samples.js';
 import { knownVersions } from './versions.js';
+import { highlight } from './highlight.js';
+import { moveElement } from './fix.js';
 import { toMarkdown, toJson } from './report.js';
 import { shareableState, encodeState, decodeState } from './share.js';
 import { contextPath, lookup, complete } from './assist.js';
 
 const $ = (s) => document.querySelector(s);
 const els = {
-  source: $('#source'), gutter: $('#gutter-inner'), backdrop: $('#backdrop-inner'), hint: $('#empty-hint'), editor: $('#editor'),
+  source: $('#source'), gutter: $('#gutter-inner'), backdrop: $('#backdrop-inner'), bands: $('#bands'), hl: $('#hl'), hint: $('#empty-hint'), editor: $('#editor'),
   mode: $('#mode'), format: $('#format'), version: $('#version'), sample: $('#sample'), file: $('#file'), folder: $('#folder'), upload: $('#upload'), uploadDir: $('#upload-dir'),
   clear: $('#clear'), share: $('#share'), toast: $('#toast'), hovercard: $('#hovercard'), ac: $('#ac'), filebar: $('#filebar'), summary: $('#summary'), meta: $('#meta'), viewsw: $('#viewsw'),
   tabs: [...document.querySelectorAll('.tab')],
@@ -54,7 +56,7 @@ async function init() {
     o.value = s.id; o.textContent = s.label;
     els.sample.append(o);
   }
-  for (const v of knownVersions(schema).slice(0, 30)) {
+  for (const v of knownVersions(schema)) {
     const o = document.createElement('option');
     o.value = v; o.textContent = v;
     els.version.append(o);
@@ -227,7 +229,7 @@ function renameFile(i) {
 // ---------------------------------------------------------------- analysis
 
 let timer = null;
-function schedule() { clearTimeout(timer); timer = setTimeout(run, 250); }
+function schedule() { paint(); clearTimeout(timer); timer = setTimeout(run, 250); }
 
 function run() {
   if (!schema) return;
@@ -323,8 +325,18 @@ function renderGutter() {
   const bands = [];
   for (const [line, s] of sev) bands.push(`<div class="band ${s}" style="top:${(line - 1) * LH + 10}px"></div>`);
   if (activeLine) bands.push(`<div class="band focus" style="top:${(activeLine - 1) * LH + 10}px"></div>`);
-  els.backdrop.innerHTML = bands.join('');
+  els.bands.innerHTML = bands.join('');
   els.backdrop.style.height = `${n * LH + 20}px`;
+  paint();
+}
+
+// Syntax colouring. Very large files stay plain so typing remains responsive.
+const HL_LIMIT = 400000;
+function paint() {
+  const text = els.source.value;
+  const on = text.length <= HL_LIMIT;
+  els.editor.classList.toggle('hl-on', on);
+  els.hl.innerHTML = on ? highlight(text, fmtOfActive()) + '\n' : '';
   syncScroll();
 }
 
@@ -360,8 +372,7 @@ function renderFindings() {
     const go = (e) => { if (e.target.closest('a, button')) return; jumpToFinding(f); };
     li.addEventListener('click', go);
     li.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(e); });
-    const b = li.querySelector('[data-fix]');
-    if (b) b.addEventListener('click', () => applyFix(f));
+    for (const b of li.querySelectorAll('[data-fix]')) b.addEventListener('click', () => applyFix(f, b.dataset.to));
     ul.append(li);
   }
   p.innerHTML = `<div class="out-tools find-tools"><span>Export findings</span>
@@ -375,20 +386,36 @@ function renderFindings() {
 
 // ---------------------------------------------------------------- quick fixes
 
+// Moves are offered for concrete destinations only (not "any profile"), and not out of a users profile,
+// whose server-level destination is usually a different file.
+const moveTargets = (f) => (f.fix.kind === 'move' && f.code !== 'unknown-setting' ? f.fix.to.filter((p) => !p.includes('<')).slice(0, 3) : []);
+
 function fixButton(f) {
-  if (!f.fix || !f.fix.from) return '';
+  if (!f.fix || !f.fix.from || !f.file) return '';
   if (f.fix.kind === 'rename') return `<button class="btn small" type="button" data-fix>Rename to &lt;${esc(f.fix.to)}&gt;</button>`;
-  return '';
+  const label = (p) => (p ? p.split('.').map((x) => `&lt;${esc(x)}&gt;`).join(' › ') : 'top level');
+  return moveTargets(f).map((p) => `<button class="btn small" type="button" data-fix data-to="${esc(p)}">Move to ${label(p)}</button>`).join('');
 }
 
-/** Rename the element on the finding's line, in its own file (XML open/close tags or a YAML key). */
-function applyFix(f) {
+/** Rename the element on the finding's line, in its own file (XML open/close tags or a YAML key), or move it
+ *  under another section (`dest`). */
+function applyFix(f, dest) {
   const i = state.files.findIndex((x) => x.path === f.file);
   if (i < 0) return;
   const file = state.files[i];
   const { from, to } = f.fix;
   const fmt = file.format && file.format !== 'auto' ? file.format : /\.ya?ml$/i.test(file.path) ? 'yaml' : /\.(xml|conf)$/i.test(file.path) ? 'xml' : detectFormat(file.text);
   let done = false;
+  if (dest != null) {
+    const out = moveElement(file.text, fmt, f.line, from, dest);
+    if (out == null) { toast("Couldn't move it automatically here; edit it by hand."); return; }
+    file.text = out;
+    state.active = i;
+    showActive();
+    const at = out.split('\n').findIndex((l) => new RegExp(`^\\s*(<${escRe(from)}[\\s/>]|["']?${escRe(from)}["']?\\s*:)`).test(l));
+    if (at >= 0) jumpTo(at + 1);
+    return;
+  }
   if (fmt === 'yaml') {
     const lines = file.text.split('\n');
     const re = new RegExp(`^(\\s*(?:-\\s+)?)(["']?)${escRe(from)}\\2(\\s*:)`);

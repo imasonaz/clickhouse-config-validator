@@ -1,0 +1,1 @@
+<clickhouse><max_connections>2</max_connections><text_log remove="1"/><nothing remove="1"/></clickhouse>

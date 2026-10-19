@@ -20,7 +20,115 @@ export function cloneNode(n, parent = null) {
   return c;
 }
 
-const identifier = (n) => n.name + '\u0000' + [...n.attrs].filter(([k]) => !IDENT_SKIP.has(k)).map(([k, v]) => `${k}=${v.value}`).sort().join('\u0000');
+/** ElementIdentifier: [name, k1, v1, ...] with attributes sorted as (name, value) pairs. */
+const identifier = (n) => [n.name, ...[...n.attrs].filter(([k]) => !IDENT_SKIP.has(k)).map(([k, v]) => [k, v.value])
+  .sort((a, b) => cmpStr(a[0], b[0]) || cmpStr(a[1], b[1])).flat()];
+const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+/** std::vector<std::string> operator< as a three-way compare. */
+function cmpId(a, b) {
+  for (let i = 0; i < a.length && i < b.length; i++) { const c = cmpStr(a[i], b[i]); if (c) return c; }
+  return a.length - b.length;
+}
+
+/**
+ * The std::multimap<ElementIdentifier, Node *> that mergeRecursive builds, reproduced as libc++'s red-black
+ * tree. Which of several identical siblings a fragment element merges into depends on the tree's shape:
+ * find() returns the first equal node met descending from the root, not the first in document order.
+ */
+class IdMultimap {
+  constructor() { this.end = { left: null }; }
+  insert(key, value) {
+    const z = { key, value, left: null, right: null, parent: this.end, black: false };
+    let p = this.end, nd = this.end.left, left = true;
+    while (nd) { p = nd; left = cmpId(key, nd.key) < 0; nd = left ? nd.left : nd.right; }
+    z.parent = p;
+    if (left) p.left = z; else p.right = z;
+    this.balanceAfterInsert(this.end.left, z);
+  }
+  find(key) {
+    let nd = this.end.left;
+    while (nd) { const c = cmpId(key, nd.key); if (c < 0) nd = nd.left; else if (c > 0) nd = nd.right; else return nd; }
+    return null;
+  }
+  static isLeft(x) { return x === x.parent.left; }
+  static rotL(x) {
+    const y = x.right; x.right = y.left; if (x.right) x.right.parent = x;
+    y.parent = x.parent; if (IdMultimap.isLeft(x)) x.parent.left = y; else x.parent.right = y;
+    y.left = x; x.parent = y;
+  }
+  static rotR(x) {
+    const y = x.left; x.left = y.right; if (x.left) x.left.parent = x;
+    y.parent = x.parent; if (IdMultimap.isLeft(x)) x.parent.left = y; else x.parent.right = y;
+    y.right = x; x.parent = y;
+  }
+  balanceAfterInsert(root, x) {
+    const isLeft = IdMultimap.isLeft;
+    x.black = x === root;
+    while (x !== root && !x.parent.black) {
+      if (isLeft(x.parent)) {
+        const y = x.parent.parent.right;
+        if (y && !y.black) {
+          x = x.parent; x.black = true; x = x.parent; x.black = x === root; y.black = true;
+        } else {
+          if (!isLeft(x)) { x = x.parent; IdMultimap.rotL(x); }
+          x = x.parent; x.black = true; x = x.parent; x.black = false; IdMultimap.rotR(x); break;
+        }
+      } else {
+        const y = x.parent.parent.left;
+        if (y && !y.black) {
+          x = x.parent; x.black = true; x = x.parent; x.black = x === root; y.black = true;
+        } else {
+          if (isLeft(x)) { x = x.parent; IdMultimap.rotR(x); }
+          x = x.parent; x.black = true; x = x.parent; x.black = false; IdMultimap.rotL(x); break;
+        }
+      }
+    }
+  }
+  /** libc++ __tree_remove. */
+  erase(z) {
+    const isLeft = IdMultimap.isLeft, blk = (n) => !n || n.black;
+    let root = this.end.left;
+    let y = z;
+    if (z.left && z.right) { y = z.right; while (y.left) y = y.left; }
+    let x = y.left || y.right, w = null;
+    if (x) x.parent = y.parent;
+    if (isLeft(y)) { y.parent.left = x; if (y !== root) w = y.parent.right; else root = x; } else { y.parent.right = x; w = y.parent.left; }
+    const removedBlack = y.black;
+    if (y !== z) {
+      y.parent = z.parent;
+      if (isLeft(z)) y.parent.left = y; else y.parent.right = y;
+      y.left = z.left; y.left.parent = y;
+      y.right = z.right; if (y.right) y.right.parent = y;
+      y.black = z.black;
+      if (root === z) root = y;
+    }
+    if (!removedBlack || !root) return;
+    if (x) { x.black = true; return; }
+    for (;;) {
+      if (!isLeft(w)) {
+        if (!w.black) { w.black = true; w.parent.black = false; IdMultimap.rotL(w.parent); if (root === w.left) root = w; w = w.left.right; }
+        if (blk(w.left) && blk(w.right)) {
+          w.black = false; x = w.parent;
+          if (x === root || !x.black) { x.black = true; break; }
+          w = isLeft(x) ? x.parent.right : x.parent.left;
+        } else {
+          if (blk(w.right)) { w.left.black = true; w.black = false; IdMultimap.rotR(w); w = w.parent; }
+          w.black = w.parent.black; w.parent.black = true; w.right.black = true; IdMultimap.rotL(w.parent); break;
+        }
+      } else {
+        if (!w.black) { w.black = true; w.parent.black = false; IdMultimap.rotR(w.parent); if (root === w.right) root = w; w = w.right.left; }
+        if (blk(w.left) && blk(w.right)) {
+          w.black = false; x = w.parent;
+          if (!x.black || x === root) { x.black = true; break; }
+          w = isLeft(x) ? x.parent.right : x.parent.left;
+        } else {
+          if (blk(w.left)) { w.right.black = true; w.black = false; IdMultimap.rotL(w); w = w.parent; }
+          w.black = w.parent.black; w.parent.black = true; w.left.black = true; IdMultimap.rotR(w.parent); break;
+        }
+      }
+    }
+  }
+}
 
 /** Directory and basename helpers for forward-slash paths. */
 const dirname = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
@@ -84,7 +192,8 @@ export function mergeDocs(docs) {
   function mergeRecursive(cfg, withNode, path) {
     // Remove non-whitespace text from the target (it is replaced by the fragment's text, if any).
     const hadText = cfg.text != null && cfg.text.trim() !== '';
-    const available = cfg.children.map((c) => ({ c, id: identifier(c), used: false }));
+    const available = new IdMultimap();
+    for (const c of cfg.children) available.insert(identifier(c), c);
     for (const w of withNode.children) {
       const remove = w.attrs.has('remove');
       const replace = w.attrs.has('replace');
@@ -92,11 +201,10 @@ export function mergeDocs(docs) {
         findings.push({ sev: 'error', code: 'replace-remove', file: path, line: w.line, msg: `Both remove and replace attributes set for element <${w.name}>; ClickHouse throws while merging.` });
         continue;
       }
-      const wid = identifier(w);
-      const match = available.find((a) => !a.used && a.id === wid);
+      const match = available.find(identifier(w));
       if (match) {
-        match.used = true;
-        const target = match.c;
+        available.erase(match);
+        const target = match.value;
         if (remove) {
           cfg.children.splice(cfg.children.indexOf(target), 1);
           events.push({ type: 'remove', file: path, line: w.line, target: describe(target) });

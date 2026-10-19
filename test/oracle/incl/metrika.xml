@@ -1,0 +1,4 @@
+<clickhouse>
+  <zookeeper-servers><node><host>zk1</host><port>2181</port></node><node index="2"><host>zk2</host><port>2181</port></node></zookeeper-servers>
+  <clusters><c2><shard><replica><host>y</host><port>2</port></replica></shard></c2></clusters>
+</clickhouse>

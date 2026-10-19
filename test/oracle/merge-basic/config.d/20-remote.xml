@@ -1,0 +1,1 @@
+<clickhouse><remote_servers replace="1"><b><shard><replica><host>h2</host><port>9000</port></replica></shard></b></remote_servers></clickhouse>

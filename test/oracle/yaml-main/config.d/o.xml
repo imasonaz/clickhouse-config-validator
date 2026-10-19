@@ -1,0 +1,1 @@
+<clickhouse><http_port>8124</http_port><logger><level>debug</level></logger></clickhouse>

@@ -1,0 +1,5 @@
+<clickhouse>
+  <storage_configuration><disks><d1><path>/b/</path></d1><d2><path>/c/</path></d2></disks></storage_configuration>
+  <graphite><host>g3</host></graphite>
+  <named_collections><nc><url replace="1">b</url><extra>1</extra></nc></named_collections>
+</clickhouse>

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Download the ClickHouse sources and docs the schema generator reads, then regenerate data/schema.json.
 # Usage: tools/fetch_sources.sh [git ref, default master]
+# Needs git; the release scan does a shallow, sparse checkout of each release since 24.1 (cached).
 set -euo pipefail
 REF="${1:-master}"
 B="https://raw.githubusercontent.com/ClickHouse/ClickHouse/${REF}"
@@ -24,4 +25,6 @@ get docs/guides/oss/deployment-and-scaling/keeper/index.mdx keeper.mdx
 get docs/concepts/features/configuration/server-config/configuration-files.mdx cfgfiles.mdx
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CH_REF="$REF" python3 -I "$DIR/gen.py" "$OUT" "$DIR/../data/schema.json"
+# Per-release availability (first/last release of each setting). Set RELEASES_CACHE to reuse the checkout.
+python3 -I "$DIR/releases.py" "${RELEASES_CACHE:-$HOME/.cache/ccv-releases}" "$DIR/../data/schema.json"
 rm -rf "$OUT"

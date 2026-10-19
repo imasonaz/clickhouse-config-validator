@@ -10,8 +10,10 @@ export const cmpVer = (a, b) => {
   return 0;
 };
 
-/** Version the setting first appeared in, when its oldest record says so. */
+/** Release the setting first appeared in: from the per-release index (tools/releases.py) when present,
+ *  else from its oldest history record. 'next' = not in any release yet. */
 export function addedIn(def) {
+  if (def.since) return def.since;
   const h = def.h;
   if (!h || !h.length) return null;
   const oldest = h[h.length - 1];
@@ -43,8 +45,14 @@ export function defaultChanges(def) {
   return (def.h || []).filter((r) => r[1] !== r[2] && !/\bnew setting\b/i.test(r[3])).map(([version, from, to, reason]) => ({ version, from, to, reason }));
 }
 
-/** All versions mentioned in a schema's history records, newest first. */
+/** [first, last] release of a setting that is no longer declared, or null. first = null: in the oldest indexed release. */
+export function removedRange(schema, scope, name) {
+  return schema.removed?.[scope]?.[name] || null;
+}
+
+/** Releases to offer as targets, newest first. */
 export function knownVersions(schema) {
+  if (schema.releases) return [...schema.releases].reverse();
   const s = new Set();
   for (const group of [schema.session, schema.mergeTree]) for (const d of Object.values(group)) for (const r of d.h || []) if (/^\d+\.\d+$/.test(r[0])) s.add(r[0]);
   return [...s].sort((a, b) => cmpVer(b, a));

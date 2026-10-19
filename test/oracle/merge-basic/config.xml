@@ -1,0 +1,7 @@
+<clickhouse>
+  <logger><level>trace</level><size>100M</size></logger>
+  <http_port>8123</http_port>
+  <max_connections from_env="MAXC"/>
+  <remote_servers><a><shard><replica><host>h1</host><port>9000</port></replica></shard></a></remote_servers>
+  <macros><replica from_env="REPLICA" replace="1">r0</replica><shard>s1</shard></macros>
+</clickhouse>

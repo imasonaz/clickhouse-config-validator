@@ -88,6 +88,14 @@ for (const [f, want] of Object.entries(expect)) {
     'config.d/30-rm.yaml': 'http_port:\n  "@remove": 1\nmax_connections: 100\n',
     'config.d/notes.txt': 'ignored', 'config.d/.tmp.xml': '<clickhouse/>' });
   check('merge override', g(r, 'logger.level') === 'warning', g(r, 'logger.level'));
+  {
+    // Results captured from ClickHouse 26.9 (tools/oracle.mjs): duplicates are matched through a libc++ multimap.
+    const hs = (x) => x.merged.root.children.filter((c) => c.name === 'g').map((c) => c.children[0].text).join(',');
+    const dup = (n, f) => set({ 'config.xml': `<clickhouse>${Array.from({ length: n }, (_, i) => `<g><h>${i + 1}</h></g>`).join('')}</clickhouse>`,
+      'config.d/a.xml': `<clickhouse>${f.map((v) => `<g><h>${v}</h></g>`).join('')}</clickhouse>` });
+    check('duplicate match 3+1', hs(dup(3, ['A'])) === '1,A,3', hs(dup(3, ['A'])));
+    check('duplicate match 4+2', hs(dup(4, ['A', 'B'])) === '1,A,B,4', hs(dup(4, ['A', 'B'])));
+  }
   check('merge keeps untouched', g(r, 'logger.size') === '1000M');
   check('merge replace', !getPath(r.merged.root, 'remote_servers.a') && !!getPath(r.merged.root, 'remote_servers.b'));
   check('merge remove (yaml fragment)', !getPath(r.merged.root, 'http_port'));
@@ -169,6 +177,14 @@ for (const [f, want] of Object.entries(expect)) {
   check('too new for target', codes(analyze(prof(tag(fresh, schema.session[fresh].d)), { schema, version: '26.3' })).includes('version-too-new'));
   check('fine on latest', !codes(analyze(prof(tag(fresh, schema.session[fresh].d)), { schema })).includes('version-too-new'));
   check('digit separators parsed', !!schema.session.allow_experimental_usearch_index);
+  // Per-release index (tools/releases.py).
+  check('release list', schema.releases[0] === '24.1' && schema.releases.includes('26.8'));
+  check('since from release index', codes(analyze('<clickhouse><merge_tree><apply_patches_on_merge>1</apply_patches_on_merge></merge_tree></clickhouse>', { schema, version: '25.3' })).includes('version-too-new'));
+  check('coordination since', codes(analyze('<clickhouse><keeper_server><server_id>1</server_id><coordination_settings><use_new_dispatcher>1</use_new_dispatcher></coordination_settings></keeper_server></clickhouse>', { schema, mode: 'keeper', version: '26.3' })).includes('version-too-new'));
+  const ice = tag('allow_experimental_time_series_aggregate_functions');
+  check('removed setting still valid on old target', codes(analyze(prof(ice), { schema, version: '26.3' }), 'info').includes('removed-later') && !codes(analyze(prof(ice), { schema, version: '26.3' })).includes('unknown-setting'));
+  check('removed setting on latest', codes(analyze(prof(ice), { schema }), 'error').includes('removed-setting'));
+  check('removed server key warns', codes(analyze('<clickhouse><dns_cache_max_size>1</dns_cache_max_size></clickhouse>', { schema }), 'warning').includes('removed-setting'));
 }
 
 // Share links: redaction and round trip.
@@ -230,6 +246,33 @@ for (const [f, want] of Object.entries(expect)) {
   check('complete coordination', complete(schema, ['keeper_server', 'coordination_settings'], 'heart')[0] === 'heart_beat_interval_ms');
   check('lookup server', lookup(schema, [], 'max_connections')?.scope === 'server setting');
   check('lookup with path', lookup(schema, ['query_cache'], 'max_size_in_bytes')?.name === 'query_cache.max_size_in_bytes');
+}
+
+// Move quick fix.
+{
+  const { moveElement } = await import('../js/fix.js');
+  const x = '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <force_sync>false</force_sync>\n    </keeper_server>\n</clickhouse>\n';
+  const mx = moveElement(x, 'xml', 4, 'force_sync', 'keeper_server.coordination_settings');
+  check('move xml creates section', mx === '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <coordination_settings>\n            <force_sync>false</force_sync>\n        </coordination_settings>\n    </keeper_server>\n</clickhouse>\n', mx);
+  const r = analyze(mx, { schema, mode: 'keeper' });
+  check('moved setting recognised', !codes(r).includes('unknown-key'), codes(r).join());
+  check('move xml no-op refused', moveElement(x, 'xml', 4, 'force_sync', 'keeper_server') === null);
+  const y = 'keeper_server:\n  tcp_port: 9181\n  force_sync: false\n  coordination_settings:\n    operation_timeout_ms: 10000\n';
+  check('move yaml into existing section', moveElement(y, 'yaml', 3, 'force_sync', 'keeper_server.coordination_settings') === 'keeper_server:\n  tcp_port: 9181\n  coordination_settings:\n    operation_timeout_ms: 10000\n    force_sync: false\n');
+  const mtOnly = Object.keys(schema.mergeTree).find((k) => !schema.session[k] && !schema.server[k] && !schema.coordination[k]);
+  const at = analyze(`<clickhouse><${mtOnly}>1</${mtOnly}></clickhouse>`, { schema });
+  check('mergetree-at-root offers move', at.findings.some((f) => f.code === 'mergetree-at-root' && f.fix?.kind === 'move'));
+}
+
+// Syntax colouring must reproduce the text exactly.
+{
+  const { highlight } = await import('../js/highlight.js');
+  const plain = (h) => h.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const cases = [['xml', fx('config.xml')], ['yaml', fx('config.yaml')], ['yaml', fx('bad_server.yaml')], ['xml', fx('broken.xml')], ['xml', '<a x="1" incl="y"><!-- c\n --><![CDATA[<z>]]></a><b'], ['xml', '<a>1 & 2 < 3</a'],
+    ['yaml', 'a: 1 # c\nb: "x # y"\n- k: |\n    l1 # not\n    l2\nc: [1, 2]\n"@remove": 1\n']];
+  for (const [f, t] of cases) check(`highlight round-trip ${f}`, plain(highlight(t, f)) === t, t.slice(0, 40));
+  check('highlight yaml block scalar plain', !highlight('k: |\n  # x\n', 'yaml').includes('hl-com'));
+  check('highlight xml subst attr', highlight('<a from_env="X"/>', 'xml').includes('hl-kw'));
 }
 
 console.log(`${passed} passed, ${failed} failed`);

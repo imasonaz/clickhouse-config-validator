@@ -1,0 +1,12 @@
+logger:
+  level: trace
+http_port: 8123
+remote_servers:
+  c:
+    shard:
+      - replica:
+          host: a
+          port: 9000
+      - replica:
+          host: b
+          port: 9000

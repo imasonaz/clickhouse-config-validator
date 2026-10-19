@@ -1,0 +1,8 @@
+<clickhouse>
+  <include_from>INCLUDE_DIR/metrika.xml</include_from>
+  <zookeeper incl="zookeeper-servers"/>
+  <macros incl="macros" optional="1"/>
+  <remote_servers incl="clusters"><local><shard><replica><host>x</host><port>1</port></replica></shard></local></remote_servers>
+  <listen_host from_env="LH" optional="1"/>
+  <users_config from_env="NOPE"/>
+</clickhouse>

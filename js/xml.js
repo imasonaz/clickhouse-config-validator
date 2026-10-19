@@ -113,7 +113,7 @@ export function parseXml(src) {
       continue;
     }
     if (startsWith('</')) {
-      const l = line, c = col;
+      const l = line, c = col, closeStart = i;
       advance(2);
       const { name } = readName();
       skipWs();
@@ -123,15 +123,18 @@ export function parseXml(src) {
       if (!open) err(`Closing tag </${name}> has no matching opening tag`, l, c);
       if (open.name !== name) err(`Mismatched closing tag: expected </${open.name}> (opened at line ${open.line}), found </${name}>`, l, c);
       open.endLine = l;
+      open.closeStart = closeStart;
+      open.end = i;
       finishNode(open);
       continue;
     }
     if (src[i] === '<') {
-      const l = line, c = col;
+      const l = line, c = col, start = i;
       advance();
       const { name } = readName();
       if (!stack.length && doc.root) err(`Only one root element is allowed; found second root <${name}>`, l, c);
       const node = makeNode(name, l, c);
+      node.start = start;
       node._textParts = [];
       for (;;) {
         const hadWs = /\s/.test(src[i] ?? '');
@@ -159,7 +162,8 @@ export function parseXml(src) {
       }
       const parent = stack[stack.length - 1];
       if (parent) { node.parent = parent; parent.children.push(node); } else doc.root = node;
-      if (node.selfClosing) { node.endLine = l; finishNode(node); } else stack.push(node);
+      node.openEnd = i;
+      if (node.selfClosing) { node.endLine = l; node.end = i; finishNode(node); } else stack.push(node);
       continue;
     }
     // text

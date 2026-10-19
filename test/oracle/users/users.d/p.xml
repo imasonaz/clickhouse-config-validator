@@ -1,0 +1,1 @@
+<clickhouse><profiles><default><max_threads>8</max_threads></default><ro><readonly>1</readonly></ro></profiles><users><default remove="1"/><u><password>x</password><profile>ro</profile></u></users></clickhouse>
