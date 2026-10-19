@@ -12,35 +12,63 @@ const CONSTRAINTS = `${DOCS}/concepts/features/configuration/settings/constraint
 const GH = 'https://github.com/ClickHouse/ClickHouse/blob/master';
 
 let schema = null;
-export function setSchema(s) { schema = s; }
+/** Set the generated schema the citation helpers look documentation anchors up in. */
+export function setSchema(s) {
+  schema = s;
+}
 
 export const ref = {
   server(name) {
     const p = schema && schema.docPaths[name];
-    return { label: p ? `Server setting: ${name}` : 'Server settings reference', url: p ? `${SERVER_SETTINGS}${p}` : SERVER_SETTINGS };
+    return {
+      label: p ? `Server setting: ${name}` : 'Server settings reference',
+      url: p ? `${SERVER_SETTINGS}${p}` : SERVER_SETTINGS,
+    };
   },
   session(name) {
     const p = schema && schema.sessionDocPaths[name];
-    return { label: p ? `Session setting: ${name}` : 'Session settings reference', url: p ? `${SESSION_SETTINGS}${p}` : SESSION_SETTINGS };
+    return {
+      label: p ? `Session setting: ${name}` : 'Session settings reference',
+      url: p ? `${SESSION_SETTINGS}${p}` : SESSION_SETTINGS,
+    };
   },
   mergeTree(name) {
     const p = schema && schema.mergeTreeDocPaths[name];
-    return { label: p ? `MergeTree setting: ${name}` : 'MergeTree settings reference', url: p ? `${MERGETREE_SETTINGS}${p}` : MERGETREE_SETTINGS };
+    return {
+      label: p ? `MergeTree setting: ${name}` : 'MergeTree settings reference',
+      url: p ? `${MERGETREE_SETTINGS}${p}` : MERGETREE_SETTINGS,
+    };
   },
   keeper(anchor = 'keeper-configuration-settings', label = 'Keeper configuration settings') {
     return { label, url: `${KEEPER}#${anchor}` };
   },
-  keeperCoordination() { return this.keeper('internal-coordination-settings', 'Keeper internal coordination settings'); },
-  keeperFlags() { return this.keeper('feature-flags', 'Keeper feature flags'); },
-  keeper4lw() { return this.keeper('four-letter-word-commands', 'Keeper four letter word commands'); },
-  keeperHttp() { return this.keeper('http-control', 'Keeper HTTP control'); },
-  keeperQuorum() { return this.keeper('recovering-after-losing-quorum', 'Keeper: recovering after losing quorum'); },
+  keeperCoordination() {
+    return this.keeper('internal-coordination-settings', 'Keeper internal coordination settings');
+  },
+  keeperFlags() {
+    return this.keeper('feature-flags', 'Keeper feature flags');
+  },
+  keeper4lw() {
+    return this.keeper('four-letter-word-commands', 'Keeper four letter word commands');
+  },
+  keeperHttp() {
+    return this.keeper('http-control', 'Keeper HTTP control');
+  },
+  keeperQuorum() {
+    return this.keeper('recovering-after-losing-quorum', 'Keeper: recovering after losing quorum');
+  },
   configFiles(anchor, label) {
     return { label: label || 'Configuration files', url: anchor ? `${CONFIG_FILES}#${anchor}` : CONFIG_FILES };
   },
-  users(anchor, label) { return { label: label || 'Users and roles settings', url: anchor ? `${USERS}#${anchor}` : USERS }; },
-  constraints(anchor) { return { label: 'Constraints on settings', url: anchor ? `${CONSTRAINTS}#${anchor}` : CONSTRAINTS }; },
-  source(file, label) { return { label: `Source: ${label || file.split('/').pop()}`, url: `${GH}/${file}`, source: true }; },
+  users(anchor, label) {
+    return { label: label || 'Users and roles settings', url: anchor ? `${USERS}#${anchor}` : USERS };
+  },
+  constraints(anchor) {
+    return { label: 'Constraints on settings', url: anchor ? `${CONSTRAINTS}#${anchor}` : CONSTRAINTS };
+  },
+  source(file, label) {
+    return { label: `Source: ${label || file.split('/').pop()}`, url: `${GH}/${file}`, source: true };
+  },
 };
 
 // Frequently cited source files.

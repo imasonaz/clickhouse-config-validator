@@ -9,30 +9,77 @@ import { planFiles, mergeDocs, applySubstitutions, tagFile, parseSubstitutions }
 import { child, textOf } from './tree.js';
 import { crossCheck, crossRefs, nodeCheck, portOverlap } from './cluster.js';
 
+/** 'xml' when the text starts with '<' (after a BOM and whitespace), else 'yaml'. */
 export function detectFormat(text) {
-  const t = text.replace(/^﻿/, '').trimStart();
+  const t = text.replace(/^\uFEFF/, '').trimStart();
   return t.startsWith('<') ? 'xml' : 'yaml';
 }
 
-export function analyze(text, { schema, mode = 'auto', format = 'auto', version = 'latest', featureTier = null, standalone = true } = {}) {
+/**
+ * Parse and validate one file on its own.
+ * @param {string} text file contents
+ * @param {object} opts schema (data/schema.json), mode ('auto' | 'server' | 'users' | 'keeper'), format ('auto' | 'xml' |
+ *   'yaml'), version (target release or 'latest'), featureTier (allow_feature_tier from another file), standalone (false
+ *   when called from analyzeSet, which runs the cross-file checks itself)
+ * @returns {{ format: string, doc: object|null, findings: object[], mode: string, recognized: object[], parseError?: boolean, empty?: boolean }}
+ */
+export function analyze(
+  text,
+  { schema, mode = 'auto', format = 'auto', version = 'latest', featureTier = null, standalone = true } = {},
+) {
   setSchema(schema);
   const fmt = format === 'auto' ? detectFormat(text) : format;
-  const src = text.replace(/^﻿/, '');
+  const src = text.replace(/^\uFEFF/, '');
   if (!src.trim()) return { format: fmt, doc: null, findings: [], mode, recognized: [], empty: true };
   const wraps = fmt === 'xml' ? findWrappedLines(src) : [];
-  const wrapFinding = (sev) => (wraps.length ? [{ sev, code: 'hard-wrap', line: wraps[0], col: 1, path: '', fix: { kind: 'unwrap' }, refs: [],
-    msg: `${wraps.length === 1 ? 'This line looks' : `${wraps.length} lines look`} hard-wrapped: a long line was split mid-tag or mid-value when it was copied (from a terminal, email or ticket), at line${wraps.length === 1 ? '' : 's'} ${wraps.slice(0, 6).join(', ')}${wraps.length > 6 ? '…' : ''}. Join the pieces back together before using this file.` }] : []);
+  const wrapFinding = (sev) =>
+    wraps.length
+      ? [
+          {
+            sev,
+            code: 'hard-wrap',
+            line: wraps[0],
+            col: 1,
+            path: '',
+            fix: { kind: 'unwrap' },
+            refs: [],
+            msg: `${wraps.length === 1 ? 'This line looks' : `${wraps.length} lines look`} hard-wrapped: a long line was split mid-tag or mid-value when it was copied (from a terminal, email or ticket), at line${wraps.length === 1 ? '' : 's'} ${wraps.slice(0, 6).join(', ')}${wraps.length > 6 ? '…' : ''}. Join the pieces back together before using this file.`,
+          },
+        ]
+      : [];
   let doc;
   try {
     doc = fmt === 'xml' ? parseXml(src) : parseYaml(src);
   } catch (e) {
     if (e instanceof XmlError || e instanceof YamlError) {
-      const refs = fmt === 'xml'
-        ? [ref.configFiles(null, 'Configuration files'), { label: 'XML 1.0 well-formedness', url: 'https://www.w3.org/TR/xml/#sec-well-formed' }]
-        : [ref.configFiles('example-1', 'YAML examples'), { label: 'YAML 1.2 spec', url: 'https://yaml.org/spec/1.2.2/' }];
+      const refs =
+        fmt === 'xml'
+          ? [
+              ref.configFiles(null, 'Configuration files'),
+              { label: 'XML 1.0 well-formedness', url: 'https://www.w3.org/TR/xml/#sec-well-formed' },
+            ]
+          : [
+              ref.configFiles('example-1', 'YAML examples'),
+              { label: 'YAML 1.2 spec', url: 'https://yaml.org/spec/1.2.2/' },
+            ];
       return {
-        format: fmt, doc: null, mode, recognized: [], parseError: true,
-        findings: [...wrapFinding('error'), { sev: 'error', code: 'syntax', msg: `${fmt.toUpperCase()} syntax error: ${e.message}. ClickHouse cannot load this file.`, line: e.line || 1, col: e.col || 1, path: '', refs }],
+        format: fmt,
+        doc: null,
+        mode,
+        recognized: [],
+        parseError: true,
+        findings: [
+          ...wrapFinding('error'),
+          {
+            sev: 'error',
+            code: 'syntax',
+            msg: `${fmt.toUpperCase()} syntax error: ${e.message}. ClickHouse cannot load this file.`,
+            line: e.line || 1,
+            col: e.col || 1,
+            path: '',
+            refs,
+          },
+        ],
       };
     }
     throw e;
@@ -46,16 +93,54 @@ export function analyze(text, { schema, mode = 'auto', format = 'auto', version 
 // ---------------------------------------------------------------- multi-file (config.d / users.d) analysis
 
 // Findings that only make sense against the file as written (attributes and syntax vanish once merged).
-const FILE_LOCAL = new Set(['syntax', 'hard-wrap', 'root-yandex', 'root-name', 'yaml-explicit-root', 'yaml-dup-key', 'yaml-merge-key', 'yaml-complex-key', 'bad-name',
-  'unknown-attr', 'multi-subst', 'yaml-attr', 'include-children', 'include-no-subst', 'replace-remove', 'replace-order', 'subst-has-value', 'mixed-content']);
-const MAIN_NAMES = ['config.xml', 'config.yaml', 'config.yml', 'keeper_config.xml', 'keeper_config.yaml', 'keeper_config.yml', 'users.xml', 'users.yaml', 'users.yml'];
-const fmtOf = (path, text, fmt) => (fmt && fmt !== 'auto' ? fmt : /\.ya?ml$/i.test(path) ? 'yaml' : /\.(xml|conf)$/i.test(path) ? 'xml' : detectFormat(text));
+const FILE_LOCAL = new Set([
+  'syntax',
+  'hard-wrap',
+  'root-yandex',
+  'root-name',
+  'yaml-explicit-root',
+  'yaml-dup-key',
+  'yaml-merge-key',
+  'yaml-complex-key',
+  'bad-name',
+  'unknown-attr',
+  'multi-subst',
+  'yaml-attr',
+  'include-children',
+  'include-no-subst',
+  'replace-remove',
+  'replace-order',
+  'subst-has-value',
+  'mixed-content',
+]);
+const MAIN_NAMES = [
+  'config.xml',
+  'config.yaml',
+  'config.yml',
+  'keeper_config.xml',
+  'keeper_config.yaml',
+  'keeper_config.yml',
+  'users.xml',
+  'users.yaml',
+  'users.yml',
+];
+const fmtOf = (path, text, fmt) =>
+  fmt && fmt !== 'auto'
+    ? fmt
+    : /\.ya?ml$/i.test(path)
+      ? 'yaml'
+      : /\.(xml|conf)$/i.test(path)
+        ? 'xml'
+        : detectFormat(text);
 const inDotD = (path) => /(^|\/)[^/]+\.d\/[^/]+$/.test(path);
 
 /** Files that can act as the main config: anything not inside a *.d directory. Well-known names first. */
 export function mainCandidates(files) {
   const c = files.filter((f) => !inDotD(f.path));
-  const rank = (p) => { const i = MAIN_NAMES.indexOf(p.slice(p.lastIndexOf('/') + 1)); return i < 0 ? 99 : i; };
+  const rank = (p) => {
+    const i = MAIN_NAMES.indexOf(p.slice(p.lastIndexOf('/') + 1));
+    return i < 0 ? 99 : i;
+  };
   return c.sort((a, b) => rank(a.path) - rank(b.path)).map((f) => f.path);
 }
 
@@ -68,10 +153,20 @@ export function analyzeSet(files, { schema, mode = 'auto', mainPath, substitutio
   setSchema(schema);
   // allow_feature_tier from any loaded server config also governs settings in users.xml profiles.
   let featureTier = null;
-  for (const f of files) { const m = /<allow_feature_tier>\s*(\d)\s*<\/allow_feature_tier>|^allow_feature_tier:\s*(\d)\s*$/m.exec(f.text); if (m) featureTier = Number(m[1] ?? m[2]); }
+  for (const f of files) {
+    const m = /<allow_feature_tier>\s*(\d)\s*<\/allow_feature_tier>|^allow_feature_tier:\s*(\d)\s*$/m.exec(f.text);
+    if (m) featureTier = Number(m[1] ?? m[2]);
+  }
   const perFile = new Map();
   for (const f of files) {
-    const res = analyze(f.text, { schema, mode, format: fmtOf(f.path, f.text, f.format), version, featureTier, standalone: false });
+    const res = analyze(f.text, {
+      schema,
+      mode,
+      format: fmtOf(f.path, f.text, f.format),
+      version,
+      featureTier,
+      standalone: false,
+    });
     for (const x of res.findings) x.file = f.path;
     if (res.doc) tagFile(res.doc.root, f.path);
     perFile.set(f.path, res);
@@ -81,37 +176,74 @@ export function analyzeSet(files, { schema, mode = 'auto', mainPath, substitutio
   const mains = mainCandidates(files);
   const { env, zk } = parseSubstitutions(substitutions);
   // Each main config with its own fragments, merged the way its server would see it (for cross-node checks).
-  const effRoot = (d) => d.meta?.explicitClickhouseRoot ? { ...d.meta.explicitClickhouseRoot, name: 'clickhouse' } : d.root;
-  const nodeOf = new Map();   // file -> the main config it belongs to
+  const effRoot = (d) =>
+    d.meta?.explicitClickhouseRoot ? { ...d.meta.explicitClickhouseRoot, name: 'clickhouse' } : d.root;
+  const nodeOf = new Map(); // file -> the main config it belongs to
   const mergedFor = (path) => {
     const r = perFile.get(path);
     const inc0 = child(effRoot(r.doc), 'include_from');
-    const plan0 = planFiles(files.map((f) => ({ path: f.path })), path, inc0 ? textOf(inc0) : null);
+    const plan0 = planFiles(
+      files.map((f) => ({ path: f.path })),
+      path,
+      inc0 ? textOf(inc0) : null,
+    );
     const docs0 = [{ path, doc: { root: effRoot(r.doc) } }];
-    for (const p of plan0) if (p.role === 'fragment' && perFile.get(p.path).doc && perFile.get(p.path).mode === r.mode) { docs0.push({ path: p.path, doc: { root: effRoot(perFile.get(p.path).doc) } }); nodeOf.set(p.path, path); }
+    for (const p of plan0)
+      if (p.role === 'fragment' && perFile.get(p.path).doc && perFile.get(p.path).mode === r.mode) {
+        docs0.push({ path: p.path, doc: { root: effRoot(perFile.get(p.path).doc) } });
+        nodeOf.set(p.path, path);
+      }
     nodeOf.set(path, path);
     const { root: merged0 } = mergeDocs(docs0);
     const incP = plan0.find((p) => p.role === 'include');
     const incD = incP && perFile.get(incP.path).doc;
-    applySubstitutions(merged0, { env, zk, includeRoot: incD ? effRoot(incD) : null, includePath: incP ? incP.path : '' });
+    applySubstitutions(merged0, {
+      env,
+      zk,
+      includeRoot: incD ? effRoot(incD) : null,
+      includePath: incP ? incP.path : '',
+    });
     return { path, root: merged0 };
   };
   const mainsOfMode = (m) => mains.filter((p) => perFile.get(p)?.doc && perFile.get(p).mode === m);
   const serverNodes = mainsOfMode('server').map(mergedFor);
   const keeperNodes = mainsOfMode('keeper').map(mergedFor);
   cross.push(...nodeCheck(serverNodes));
-  if (keeperNodes.length && serverNodes.length && keeperNodes.length + serverNodes.length === 2) cross.push(...portOverlap(serverNodes, keeperNodes));
+  if (keeperNodes.length && serverNodes.length && keeperNodes.length + serverNodes.length === 2)
+    cross.push(...portOverlap(serverNodes, keeperNodes));
   mainPath = mains.includes(mainPath) ? mainPath : mains[0] || files[0]?.path;
   const main = perFile.get(mainPath);
-  if (!main || !main.doc) return { mainPath, mains, perFile, cross, plan: [], events: [], findings: main ? [...main.findings, ...cross] : cross, recognized: [], mode: main?.mode || mode, merged: null };
+  if (!main || !main.doc)
+    return {
+      mainPath,
+      mains,
+      perFile,
+      cross,
+      plan: [],
+      events: [],
+      findings: main ? [...main.findings, ...cross] : cross,
+      recognized: [],
+      mode: main?.mode || mode,
+      merged: null,
+    };
 
   const inc = child(effRoot(main.doc), 'include_from');
   const includeFrom = inc ? textOf(inc) : null;
-  const plan = planFiles(files.map((f) => ({ path: f.path })), mainPath, includeFrom);
+  const plan = planFiles(
+    files.map((f) => ({ path: f.path })),
+    mainPath,
+    includeFrom,
+  );
   // A loose file (no directory) of a different kind, e.g. keeper2.xml next to config.xml, is its own config, not a fragment.
   for (const p of plan) {
     const r = perFile.get(p.path);
-    if (p.role === 'fragment' && !p.path.includes('/') && r.doc && r.mode !== main.mode && (r.mode === 'keeper' || main.mode === 'keeper')) {
+    if (
+      p.role === 'fragment' &&
+      !p.path.includes('/') &&
+      r.doc &&
+      r.mode !== main.mode &&
+      (r.mode === 'keeper' || main.mode === 'keeper')
+    ) {
       p.role = 'separate';
       p.reason = `looks like a separate ${r.mode} config; put it under config.d/ to merge it`;
     }
@@ -119,19 +251,44 @@ export function analyzeSet(files, { schema, mode = 'auto', mainPath, substitutio
   // Files of another node (its own main config and fragments) are checked against this one, not merged into it.
   for (const p of plan) {
     const owner = nodeOf.get(p.path);
-    if (p.role === 'ignored' && owner && owner !== mainPath) { p.role = 'separate'; p.reason = owner === p.path ? 'another node\'s main config; compared with this one in the cross-node checks' : `part of ${owner}; compared in the cross-node checks`; }
+    if (p.role === 'ignored' && owner && owner !== mainPath) {
+      p.role = 'separate';
+      p.reason =
+        owner === p.path
+          ? "another node's main config; compared with this one in the cross-node checks"
+          : `part of ${owner}; compared in the cross-node checks`;
+    }
   }
   const docs = [{ path: mainPath, doc: { root: effRoot(main.doc) } }];
-  for (const p of plan) if (p.role === 'fragment' && perFile.get(p.path).doc) docs.push({ path: p.path, doc: { root: effRoot(perFile.get(p.path).doc) } });
+  for (const p of plan)
+    if (p.role === 'fragment' && perFile.get(p.path).doc)
+      docs.push({ path: p.path, doc: { root: effRoot(perFile.get(p.path).doc) } });
   const { root, events, findings: mergeFindings } = mergeDocs(docs);
   const incPlan = plan.find((p) => p.role === 'include');
   const incDoc = incPlan && perFile.get(incPlan.path).doc;
-  const substFindings = applySubstitutions(root, { env, zk, includeRoot: incDoc ? effRoot(incDoc) : null, includePath: incPlan ? incPlan.path : includeFrom || '' });
+  const substFindings = applySubstitutions(root, {
+    env,
+    zk,
+    includeRoot: incDoc ? effRoot(incDoc) : null,
+    includePath: incPlan ? incPlan.path : includeFrom || '',
+  });
   if (includeFrom && !incPlan && /\bincl=/.test(files.map((f) => f.text).join('\n')))
-    mergeFindings.push({ sev: 'info', code: 'include-from-missing', file: mainPath, line: inc.line, msg: `<include_from> points to ${includeFrom}, which is not among the loaded files; incl substitutions are not resolved. Add that file to check them.` });
+    mergeFindings.push({
+      sev: 'info',
+      code: 'include-from-missing',
+      file: mainPath,
+      line: inc.line,
+      msg: `<include_from> points to ${includeFrom}, which is not among the loaded files; incl substitutions are not resolved. Add that file to check them.`,
+    });
 
   const mergedDoc = { root, warnings: [], comments: [], prolog: [], meta: null };
-  const res = validate(mergedDoc, { schema, mode: mode === 'auto' ? main.mode : mode, format: 'merged', version, featureTier });
+  const res = validate(mergedDoc, {
+    schema,
+    mode: mode === 'auto' ? main.mode : mode,
+    format: 'merged',
+    version,
+    featureTier,
+  });
   const all = [];
   const seen = new Set();
   const push = (f) => {
@@ -141,12 +298,32 @@ export function analyzeSet(files, { schema, mode = 'auto', mainPath, substitutio
     all.push({ refs: [], path: '', col: 1, ...f });
   };
   const used = new Set([mainPath, ...docs.map((d) => d.path), incPlan?.path].filter(Boolean));
-  for (const [path, r] of perFile) if (used.has(path)) for (const f of r.findings) if (FILE_LOCAL.has(f.code) || r.parseError) push(f);
-  for (const f of [...mergeFindings, ...substFindings]) push({ ...f, refs: f.refs || [ref.configFiles('merging', 'Merging configuration'), ref.source(SRC.configProcessor, 'ConfigProcessor.cpp')] });
+  for (const [path, r] of perFile)
+    if (used.has(path)) for (const f of r.findings) if (FILE_LOCAL.has(f.code) || r.parseError) push(f);
+  for (const f of [...mergeFindings, ...substFindings])
+    push({
+      ...f,
+      refs: f.refs || [
+        ref.configFiles('merging', 'Merging configuration'),
+        ref.source(SRC.configProcessor, 'ConfigProcessor.cpp'),
+      ],
+    });
   for (const f of res.findings) push({ ...f, file: f.file || mainPath });
   for (const f of cross) push(f);
   const rank = { error: 0, warning: 1, info: 2 };
   all.sort((a, b) => rank[a.sev] - rank[b.sev] || (a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1));
   const mainsOut = mains.filter((m) => m !== incPlan?.path);
-  return { mainPath, mains: mainsOut, perFile, cross, plan, events, findings: all, recognized: res.recognized, mode: res.mode, merged: mergedDoc, includeFrom };
+  return {
+    mainPath,
+    mains: mainsOut,
+    perFile,
+    cross,
+    plan,
+    events,
+    findings: all,
+    recognized: res.recognized,
+    mode: res.mode,
+    merged: mergedDoc,
+    includeFrom,
+  };
 }

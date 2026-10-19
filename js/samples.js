@@ -200,7 +200,9 @@ zookeeper:
     id: 'merge-set',
     label: 'config.d merge (multiple files)',
     files: [
-      { path: 'config.xml', text: `<?xml version="1.0"?>
+      {
+        path: 'config.xml',
+        text: `<?xml version="1.0"?>
 <clickhouse>
     <logger>
         <level>trace</level>
@@ -220,15 +222,21 @@ zookeeper:
         </default>
     </remote_servers>
 </clickhouse>
-` },
-      { path: 'config.d/10-logging.xml', text: `<clickhouse>
+`,
+      },
+      {
+        path: 'config.d/10-logging.xml',
+        text: `<clickhouse>
     <logger>
         <level>warning</level>
         <console>1</console>
     </logger>
 </clickhouse>
-` },
-      { path: 'config.d/20-cluster.yaml', text: `remote_servers:
+`,
+      },
+      {
+        path: 'config.d/20-cluster.yaml',
+        text: `remote_servers:
   "@replace": true
   prod:
     shard:
@@ -240,23 +248,30 @@ zookeeper:
           port: 9000
 http_port:
   "@remove": 1
-` },
-      { path: 'config.d/30-tuning.xml', text: `<clickhouse>
+`,
+      },
+      {
+        path: 'config.d/30-tuning.xml',
+        text: `<clickhouse>
     <max_concurrent_queries>lots</max_concurrent_queries>
     <max_table_size_to_dorp>0</max_table_size_to_dorp>
     <merge_tree>
         <max_threads>8</max_threads>
     </merge_tree>
 </clickhouse>
-` },
-      { path: 'metrika.xml', text: `<clickhouse>
+`,
+      },
+      {
+        path: 'metrika.xml',
+        text: `<clickhouse>
     <zookeeper-servers>
         <node><host>zk-1</host><port>2181</port></node>
         <node><host>zk-2</host><port>2181</port></node>
         <node><host>zk-3</host><port>2181</port></node>
     </zookeeper-servers>
 </clickhouse>
-` },
+`,
+      },
     ],
     substitutions: 'CH_MAX_CONNECTIONS=8192',
   },
@@ -264,15 +279,20 @@ http_port:
     id: 'keeper-ensemble',
     label: 'Keeper ensemble + server (multiple files)',
     files: [
-      { path: 'config.xml', text: `<clickhouse>
+      {
+        path: 'config.xml',
+        text: `<clickhouse>
     <zookeeper>
         <node><host>keeper-1</host><port>9181</port></node>
         <node><host>keeper-2</host><port>9234</port></node>
         <node><host>keeper-3</host><port>9181</port></node>
     </zookeeper>
 </clickhouse>
-` },
-      { path: 'keeper-1.xml', text: `<clickhouse>
+`,
+      },
+      {
+        path: 'keeper-1.xml',
+        text: `<clickhouse>
     <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>1</server_id>
@@ -289,8 +309,11 @@ http_port:
         </raft_configuration>
     </keeper_server>
 </clickhouse>
-` },
-      { path: 'keeper-2.xml', text: `<clickhouse>
+`,
+      },
+      {
+        path: 'keeper-2.xml',
+        text: `<clickhouse>
     <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>2</server_id>
@@ -308,8 +331,11 @@ http_port:
         </raft_configuration>
     </keeper_server>
 </clickhouse>
-` },
-      { path: 'keeper-3.xml', text: `<clickhouse>
+`,
+      },
+      {
+        path: 'keeper-3.xml',
+        text: `<clickhouse>
     <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>2</server_id>
@@ -326,14 +352,17 @@ http_port:
         </raft_configuration>
     </keeper_server>
 </clickhouse>
-` },
+`,
+      },
     ],
   },
   {
     id: 'cluster-nodes',
     label: 'Three server nodes (multiple folders)',
     files: ['ch-1', 'ch-2', 'ch-3'].flatMap((n, i) => [
-      { path: `${n}/config.xml`, text: `<clickhouse>
+      {
+        path: `${n}/config.xml`,
+        text: `<clickhouse>
     <listen_host>::</listen_host>
     <tcp_port>9000</tcp_port>
     <http_port>8123</http_port>
@@ -343,15 +372,22 @@ http_port:
         <node><host>keeper-2</host><port>9181</port></node>
         <node><host>keeper-3</host><port>9181</port></node>
         <root>${i === 2 ? '/clickhouse-prod' : '/clickhouse'}</root>
-    </zookeeper>${i === 0 ? `
+    </zookeeper>${
+      i === 0
+        ? `
     <storage_configuration>
         <disks><scratch><path>/mnt/scratch/</path></scratch></disks>
         <policies><tmp><volumes><main><disk>scratch</disk></main></volumes></tmp></policies>
     </storage_configuration>
-    <tmp_policy>temp</tmp_policy>` : ''}
+    <tmp_policy>temp</tmp_policy>`
+        : ''
+    }
 </clickhouse>
-` },
-      { path: `${n}/config.d/cluster.xml`, text: `<clickhouse>
+`,
+      },
+      {
+        path: `${n}/config.d/cluster.xml`,
+        text: `<clickhouse>
     <remote_servers>
         <prod>
             <shard>
@@ -366,15 +402,19 @@ http_port:
         </prod>
     </remote_servers>
 </clickhouse>
-` },
-      { path: `${n}/config.d/macros.xml`, text: `<clickhouse>
+`,
+      },
+      {
+        path: `${n}/config.d/macros.xml`,
+        text: `<clickhouse>
     <macros>
         <cluster>prod</cluster>
         <shard>01</shard>
         <replica>${i === 1 ? 'ch-1' : n}</replica>
     </macros>
 </clickhouse>
-` },
+`,
+      },
     ]),
   },
 ];

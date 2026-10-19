@@ -7,10 +7,14 @@ import { toXml, toYaml } from '../js/format.js';
 
 const schema = JSON.parse(readFileSync(new URL('../data/schema.json', import.meta.url)));
 const fx = (f) => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8');
-let failed = 0, passed = 0;
+let failed = 0,
+  passed = 0;
 const check = (name, cond, info = '') => {
   if (cond) passed++;
-  else { failed++; console.error(`FAIL ${name} ${info}`); }
+  else {
+    failed++;
+    console.error(`FAIL ${name} ${info}`);
+  }
 };
 const codes = (res, sev) => res.findings.filter((f) => !sev || f.sev === sev).map((f) => f.code);
 
@@ -22,10 +26,41 @@ for (const f of ['config.xml', 'config.yaml', 'keeper_config.xml', 'users.xml', 
 }
 
 const expect = {
-  'bad_server.xml': ['log-level', 'port-dup', 'type', 'trailing-slash', 'case', 'unknown-mergetree', 'syslog-engine', 'replica-host', 'cluster-elem',
-    'zk-root', 'zk-lb', 'multi-subst', 'include-no-subst', 'unknown-setting', 'auth-multi', 'sha256-len', 'networks-key', 'unknown-key', 'whitespace',
-    'session-at-root', 'user-profile'],
-  'bad_keeper.xml': ['election-bounds', 'type', 'unknown-coord', 'feature-flag', 'raft-localhost-mix', 'raft-dup-id', 'raft-missing', 'coord-misplaced', '4lw', 'raft-even'],
+  'bad_server.xml': [
+    'log-level',
+    'port-dup',
+    'type',
+    'trailing-slash',
+    'case',
+    'unknown-mergetree',
+    'syslog-engine',
+    'replica-host',
+    'cluster-elem',
+    'zk-root',
+    'zk-lb',
+    'multi-subst',
+    'include-no-subst',
+    'unknown-setting',
+    'auth-multi',
+    'sha256-len',
+    'networks-key',
+    'unknown-key',
+    'whitespace',
+    'session-at-root',
+    'user-profile',
+  ],
+  'bad_keeper.xml': [
+    'election-bounds',
+    'type',
+    'unknown-coord',
+    'feature-flag',
+    'raft-localhost-mix',
+    'raft-dup-id',
+    'raft-missing',
+    'coord-misplaced',
+    '4lw',
+    'raft-even',
+  ],
   'bad_server.yaml': ['type', 'yaml-explicit-root', 'yaml-dup-key', 'yaml-merge-key'],
   'broken.xml': ['syntax'],
   'broken.yaml': ['syntax'],
@@ -37,15 +72,37 @@ for (const [f, want] of Object.entries(expect)) {
 
 // Keeper semantics.
 {
-  const k = (raft, extra = '') => analyze(`<clickhouse><keeper_server><tcp_port>9181</tcp_port><server_id>1</server_id>${extra}<raft_configuration>${raft}</raft_configuration></keeper_server></clickhouse>`, { schema });
-  const srv = (id, h, p = 9234, more = '') => `<server><id>${id}</id><hostname>${h}</hostname><port>${p}</port>${more}</server>`;
-  check('keeper ok 3 nodes', codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c'))).filter((c) => c !== 'keeper-log-path' && c !== 'keeper-snap-path' && c !== 'listen-default-local').length === 0, codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c'))).join());
+  const k = (raft, extra = '') =>
+    analyze(
+      `<clickhouse><keeper_server><tcp_port>9181</tcp_port><server_id>1</server_id>${extra}<raft_configuration>${raft}</raft_configuration></keeper_server></clickhouse>`,
+      { schema },
+    );
+  const srv = (id, h, p = 9234, more = '') =>
+    `<server><id>${id}</id><hostname>${h}</hostname><port>${p}</port>${more}</server>`;
+  check(
+    'keeper ok 3 nodes',
+    codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c'))).filter(
+      (c) => c !== 'keeper-log-path' && c !== 'keeper-snap-path' && c !== 'listen-default-local',
+    ).length === 0,
+    codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c'))).join(),
+  );
   check('keeper self missing', codes(k(srv(2, 'b') + srv(3, 'c'))).includes('raft-self'));
   check('keeper dup endpoint', codes(k(srv(1, 'a') + srv(2, 'a'))).includes('raft-dup-endpoint'));
   check('keeper raft port = tcp_port', codes(k(srv(1, 'a', 9181))).includes('raft-port'));
-  check('keeper all followers', codes(k(srv(1, 'a', 9234, '<start_as_follower>true</start_as_follower>'))).includes('raft-followers'));
-  check('keeper learner not counted', !codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c') + srv(4, 'd', 9234, '<can_become_leader>false</can_become_leader>'))).includes('raft-even'));
-  check('keeper poco bool accepts yes', !codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c'), '<digest_enabled>yes</digest_enabled>')).includes('type'));
+  check(
+    'keeper all followers',
+    codes(k(srv(1, 'a', 9234, '<start_as_follower>true</start_as_follower>'))).includes('raft-followers'),
+  );
+  check(
+    'keeper learner not counted',
+    !codes(
+      k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c') + srv(4, 'd', 9234, '<can_become_leader>false</can_become_leader>')),
+    ).includes('raft-even'),
+  );
+  check(
+    'keeper poco bool accepts yes',
+    !codes(k(srv(1, 'a') + srv(2, 'b') + srv(3, 'c'), '<digest_enabled>yes</digest_enabled>')).includes('type'),
+  );
 }
 
 // Type parsing.
@@ -54,17 +111,27 @@ for (const [f, want] of Object.entries(expect)) {
   check('size suffix Gi ok', !one('<mark_cache_size>5Gi</mark_cache_size>').includes('type'));
   check('size suffix lowercase g rejected', one('<mark_cache_size>5g</mark_cache_size>').includes('type'));
   check('negative unsigned rejected', one('<max_thread_pool_size>-1</max_thread_pool_size>').includes('type'));
-  check('bool TRUE ok', !one('<shutdown_wait_unfinished_queries>TRUE</shutdown_wait_unfinished_queries>').includes('type'));
+  check(
+    'bool TRUE ok',
+    !one('<shutdown_wait_unfinished_queries>TRUE</shutdown_wait_unfinished_queries>').includes('type'),
+  );
   check('nesting in scalar', one('<max_connections><a>1</a></max_connections>').includes('nesting'));
   check('enum server setting', one('<seccomp>strict</seccomp>').includes('type'));
   check('from_env skips type check', !one('<max_connections from_env="X"/>').includes('type'));
-  check('yandex root warns', codes(analyze('<yandex><max_connections>1</max_connections></yandex>', { schema })).includes('root-yandex'));
-  check('wrong root errors', codes(analyze('<config><max_connections>1</max_connections></config>', { schema })).includes('root-name'));
+  check(
+    'yandex root warns',
+    codes(analyze('<yandex><max_connections>1</max_connections></yandex>', { schema })).includes('root-yandex'),
+  );
+  check(
+    'wrong root errors',
+    codes(analyze('<config><max_connections>1</max_connections></config>', { schema })).includes('root-name'),
+  );
 }
 
 // XML -> YAML -> tree round trip keeps structure and values.
 {
-  const sig = (n) => `${n.name}[${[...n.attrs].map(([k, v]) => `${k}=${v.value}`).join(',')}]${n.children.length ? `{${n.children.map(sig).join(';')}}` : `=${(n.text ?? '').trim()}`}`;
+  const sig = (n) =>
+    `${n.name}[${[...n.attrs].map(([k, v]) => `${k}=${v.value}`).join(',')}]${n.children.length ? `{${n.children.map(sig).join(';')}}` : `=${(n.text ?? '').trim()}`}`;
   for (const f of ['config.xml', 'keeper_config.xml', 'users.xml', 'bad_server.xml']) {
     const doc = parseXml(fx(f));
     const yaml = toYaml(doc.root);
@@ -78,21 +145,40 @@ for (const [f, want] of Object.entries(expect)) {
 
 // config.d merging and substitutions.
 {
-  const set = (files, opts = {}) => analyzeSet(Object.entries(files).map(([path, text]) => ({ path, text })), { schema, ...opts });
-  const g = (r, p) => { const n = getPath(r.merged.root, p); return n ? (n.text ?? '').trim() : undefined; };
-  const main = '<clickhouse><logger><level>trace</level><size>1000M</size></logger><max_connections>4096</max_connections><path>/var/lib/clickhouse/</path>'
-    + '<remote_servers><a><shard><replica><host>h1</host><port>9000</port></replica></shard></a></remote_servers><http_port>8123</http_port></clickhouse>';
-  let r = set({ 'config.xml': main,
+  const set = (files, opts = {}) =>
+    analyzeSet(
+      Object.entries(files).map(([path, text]) => ({ path, text })),
+      { schema, ...opts },
+    );
+  const g = (r, p) => {
+    const n = getPath(r.merged.root, p);
+    return n ? (n.text ?? '').trim() : undefined;
+  };
+  const main =
+    '<clickhouse><logger><level>trace</level><size>1000M</size></logger><max_connections>4096</max_connections><path>/var/lib/clickhouse/</path>' +
+    '<remote_servers><a><shard><replica><host>h1</host><port>9000</port></replica></shard></a></remote_servers><http_port>8123</http_port></clickhouse>';
+  let r = set({
+    'config.xml': main,
     'config.d/10-log.xml': '<clickhouse><logger><level>warning</level></logger></clickhouse>',
-    'config.d/20-remote.xml': '<clickhouse><remote_servers replace="1"><b><shard><replica><host>h2</host><port>9000</port></replica></shard></b></remote_servers></clickhouse>',
+    'config.d/20-remote.xml':
+      '<clickhouse><remote_servers replace="1"><b><shard><replica><host>h2</host><port>9000</port></replica></shard></b></remote_servers></clickhouse>',
     'config.d/30-rm.yaml': 'http_port:\n  "@remove": 1\nmax_connections: 100\n',
-    'config.d/notes.txt': 'ignored', 'config.d/.tmp.xml': '<clickhouse/>' });
+    'config.d/notes.txt': 'ignored',
+    'config.d/.tmp.xml': '<clickhouse/>',
+  });
   check('merge override', g(r, 'logger.level') === 'warning', g(r, 'logger.level'));
   {
     // Results captured from ClickHouse 26.9 (tools/oracle.mjs): duplicates are matched through a libc++ multimap.
-    const hs = (x) => x.merged.root.children.filter((c) => c.name === 'g').map((c) => c.children[0].text).join(',');
-    const dup = (n, f) => set({ 'config.xml': `<clickhouse>${Array.from({ length: n }, (_, i) => `<g><h>${i + 1}</h></g>`).join('')}</clickhouse>`,
-      'config.d/a.xml': `<clickhouse>${f.map((v) => `<g><h>${v}</h></g>`).join('')}</clickhouse>` });
+    const hs = (x) =>
+      x.merged.root.children
+        .filter((c) => c.name === 'g')
+        .map((c) => c.children[0].text)
+        .join(',');
+    const dup = (n, f) =>
+      set({
+        'config.xml': `<clickhouse>${Array.from({ length: n }, (_, i) => `<g><h>${i + 1}</h></g>`).join('')}</clickhouse>`,
+        'config.d/a.xml': `<clickhouse>${f.map((v) => `<g><h>${v}</h></g>`).join('')}</clickhouse>`,
+      });
     check('duplicate match 3+1', hs(dup(3, ['A'])) === '1,A,3', hs(dup(3, ['A'])));
     check('duplicate match 4+2', hs(dup(4, ['A', 'B'])) === '1,A,B,4', hs(dup(4, ['A', 'B'])));
   }
@@ -102,61 +188,131 @@ for (const [f, want] of Object.entries(expect)) {
   check('merge yaml scalar override', g(r, 'max_connections') === '100');
   check('merge ignores non-config ext', r.plan.find((p) => p.path === 'config.d/notes.txt').role === 'ignored');
   check('merge ignores dotfiles', r.plan.find((p) => p.path === 'config.d/.tmp.xml').role === 'ignored');
-  check('merge events', r.events.some((e) => e.type === 'override' && e.target === 'logger.level'));
-  check('merged clean', !r.findings.some((f) => f.sev === 'error'), JSON.stringify(r.findings.filter((f) => f.sev === 'error')));
+  check(
+    'merge events',
+    r.events.some((e) => e.type === 'override' && e.target === 'logger.level'),
+  );
+  check(
+    'merged clean',
+    !r.findings.some((f) => f.sev === 'error'),
+    JSON.stringify(r.findings.filter((f) => f.sev === 'error')),
+  );
 
   // Ordering: later files (lexicographic) win.
-  r = set({ 'config.xml': main, 'config.d/b.xml': '<clickhouse><max_connections>2</max_connections></clickhouse>', 'config.d/a.xml': '<clickhouse><max_connections>1</max_connections></clickhouse>' });
+  r = set({
+    'config.xml': main,
+    'config.d/b.xml': '<clickhouse><max_connections>2</max_connections></clickhouse>',
+    'config.d/a.xml': '<clickhouse><max_connections>1</max_connections></clickhouse>',
+  });
   check('merge order', g(r, 'max_connections') === '2');
 
   // Type errors in fragments are attributed to the fragment.
-  r = set({ 'config.xml': main, 'config.d/x.xml': '<clickhouse>\n<max_connections>lots</max_connections></clickhouse>' });
+  r = set({
+    'config.xml': main,
+    'config.d/x.xml': '<clickhouse>\n<max_connections>lots</max_connections></clickhouse>',
+  });
   const te = r.findings.find((f) => f.code === 'type');
   check('fragment error attributed', te && te.file === 'config.d/x.xml' && te.line === 2, JSON.stringify(te));
 
   r = set({ 'config.xml': main, 'config.d/x.xml': '<clickhouse><logger remove="1" replace="1"/></clickhouse>' });
-  check('remove+replace error', r.findings.some((f) => f.code === 'replace-remove' && f.sev === 'error'));
+  check(
+    'remove+replace error',
+    r.findings.some((f) => f.code === 'replace-remove' && f.sev === 'error'),
+  );
   r = set({ 'config.xml': main, 'config.d/x.xml': '<other><a>1</a></other>' });
-  check('root mismatch', r.findings.some((f) => f.code === 'merge-root'));
+  check(
+    'root mismatch',
+    r.findings.some((f) => f.code === 'merge-root'),
+  );
   r = set({ 'config.xml': main, 'config.d/x.xml': '<yandex><max_connections>7</max_connections></yandex>' });
   check('yandex root merges', g(r, 'max_connections') === '7');
 
   // Substitutions.
-  const sub = '<clickhouse><include_from>/etc/clickhouse-server/metrika.xml</include_from><max_connections from_env="MAXC"/><zookeeper incl="zookeeper-servers"/>'
-    + '<macros><replica from_env="REPLICA" replace="1">r0</replica></macros><listen_host from_env="LH" optional="1"/><http_port from_zk="/cfg/http"/></clickhouse>';
-  r = set({ 'config.xml': sub, 'metrika.xml': '<clickhouse><zookeeper-servers><node><host>zk1</host><port>2181</port></node></zookeeper-servers></clickhouse>' },
-    { substitutions: 'MAXC=abc\nREPLICA=r9\n/cfg/http=8124' });
+  const sub =
+    '<clickhouse><include_from>/etc/clickhouse-server/metrika.xml</include_from><max_connections from_env="MAXC"/><zookeeper incl="zookeeper-servers"/>' +
+    '<macros><replica from_env="REPLICA" replace="1">r0</replica></macros><listen_host from_env="LH" optional="1"/><http_port from_zk="/cfg/http"/></clickhouse>';
+  r = set(
+    {
+      'config.xml': sub,
+      'metrika.xml':
+        '<clickhouse><zookeeper-servers><node><host>zk1</host><port>2181</port></node></zookeeper-servers></clickhouse>',
+    },
+    { substitutions: 'MAXC=abc\nREPLICA=r9\n/cfg/http=8124' },
+  );
   check('incl resolved', getPath(r.merged.root, 'zookeeper.node.host')?.text === 'zk1');
-  check('from_env value validated', r.findings.some((f) => f.code === 'type' && /max_connections/.test(f.msg)), codes(r).join(','));
+  check(
+    'from_env value validated',
+    r.findings.some((f) => f.code === 'type' && /max_connections/.test(f.msg)),
+    codes(r).join(','),
+  );
   check('from_env replace default', g(r, 'macros.replica') === 'r9');
   check('optional missing removed', !getPath(r.merged.root, 'listen_host'));
   check('from_zk text', g(r, 'http_port') === '8124');
   check('include file role', r.plan.find((p) => p.path === 'metrika.xml').role === 'include');
   r = set({ 'config.xml': sub });
-  check('missing env reported', r.findings.some((f) => f.code === 'subst-missing' && /MAXC/.test(f.msg)));
-  check('missing include_from file', r.findings.some((f) => f.code === 'include-from-missing'));
-  check('subst-has-value', codes(analyze('<clickhouse><max_connections from_env="X">5</max_connections></clickhouse>', { schema })).includes('subst-has-value'));
+  check(
+    'missing env reported',
+    r.findings.some((f) => f.code === 'subst-missing' && /MAXC/.test(f.msg)),
+  );
+  check(
+    'missing include_from file',
+    r.findings.some((f) => f.code === 'include-from-missing'),
+  );
+  check(
+    'subst-has-value',
+    codes(analyze('<clickhouse><max_connections from_env="X">5</max_connections></clickhouse>', { schema })).includes(
+      'subst-has-value',
+    ),
+  );
 
   // users.d with users.xml as main; profile defined in fragment is found.
-  r = set({ 'users.xml': '<clickhouse><users><default><password></password><profile>p2</profile><networks><ip>::/0</ip></networks></default></users><profiles><default/></profiles></clickhouse>',
-    'users.d/p.xml': '<clickhouse><profiles><p2><max_threads>4</max_threads></p2></profiles></clickhouse>' });
+  r = set({
+    'users.xml':
+      '<clickhouse><users><default><password></password><profile>p2</profile><networks><ip>::/0</ip></networks></default></users><profiles><default/></profiles></clickhouse>',
+    'users.d/p.xml': '<clickhouse><profiles><p2><max_threads>4</max_threads></p2></profiles></clickhouse>',
+  });
   check('users.d merge resolves profile', !r.findings.some((f) => f.code === 'user-profile'), codes(r).join(','));
-  check('main candidates', JSON.stringify(mainCandidates([{ path: 'config.d/a.xml' }, { path: 'users.xml' }, { path: 'config.xml' }])) === '["config.xml","users.xml"]');
+  check(
+    'main candidates',
+    JSON.stringify(mainCandidates([{ path: 'config.d/a.xml' }, { path: 'users.xml' }, { path: 'config.xml' }])) ===
+      '["config.xml","users.xml"]',
+  );
 }
 
 // Unknown keys suggest valid locations.
 {
-  const f = analyze('<clickhouse><keeper_server><listen_host>::</listen_host><tcp_port>9181</tcp_port><server_id>1</server_id></keeper_server></clickhouse>', { schema }).findings.find((x) => x.code === 'unknown-key');
-  check('unknown key location', f && f.fix?.kind === 'move' && f.fix.to.includes('') && /top level/.test(f.msg), JSON.stringify(f));
-  const m = analyze('<clickhouse><merge_tree><max_threads>3</max_threads></merge_tree></clickhouse>', { schema }).findings.find((x) => x.code === 'unknown-mergetree');
+  const f = analyze(
+    '<clickhouse><keeper_server><listen_host>::</listen_host><tcp_port>9181</tcp_port><server_id>1</server_id></keeper_server></clickhouse>',
+    { schema },
+  ).findings.find((x) => x.code === 'unknown-key');
+  check(
+    'unknown key location',
+    f && f.fix?.kind === 'move' && f.fix.to.includes('') && /top level/.test(f.msg),
+    JSON.stringify(f),
+  );
+  const m = analyze('<clickhouse><merge_tree><max_threads>3</max_threads></merge_tree></clickhouse>', {
+    schema,
+  }).findings.find((x) => x.code === 'unknown-mergetree');
   check('mergetree location', m && /profile/.test(m.msg));
 }
 
 // Host / IP address syntax.
 {
-  const bad = (v, key = 'listen_host') => codes(analyze(`<clickhouse><${key}>${v}</${key}></clickhouse>`, { schema })).includes('bad-address');
-  for (const v of ['0.0.0', '256.0.0.1', '1.2.3.4.5', '01.2.3.4', '1::2::3', '10.0.0.1:9000', 'bad host']) check(`bad address ${v}`, bad(v));
-  for (const v of ['0.0.0.0', '::', '::1', '127.0.0.1', 'fe80::1%eth0', '::ffff:10.0.0.1', 'localhost', 'ch-1.example.com']) check(`good address ${v}`, !bad(v));
+  const bad = (v, key = 'listen_host') =>
+    codes(analyze(`<clickhouse><${key}>${v}</${key}></clickhouse>`, { schema })).includes('bad-address');
+  for (const v of ['0.0.0', '256.0.0.1', '1.2.3.4.5', '01.2.3.4', '1::2::3', '10.0.0.1:9000', 'bad host'])
+    check(`bad address ${v}`, bad(v));
+  for (const v of [
+    '0.0.0.0',
+    '::',
+    '::1',
+    '127.0.0.1',
+    'fe80::1%eth0',
+    '::ffff:10.0.0.1',
+    'localhost',
+    'ch-1.example.com',
+  ])
+    check(`good address ${v}`, !bad(v));
   check('interserver host checked', bad('ch 1', 'interserver_http_host'));
 }
 
@@ -166,46 +322,139 @@ for (const [f, want] of Object.entries(expect)) {
   const exp = pick((v) => v.tier === 'experimental' && !v.obsolete);
   const beta = pick((v) => v.tier === 'beta' && !v.obsolete);
   const obs = pick((v) => v.obsolete && v.h && v.h.some((r) => /obsolete/i.test(r[3])));
-  const fresh = pick((v) => !v.tier && !v.obsolete && v.h && /new setting/i.test(v.h.at(-1)[3]) && v.h.at(-1)[0] === '26.8');
+  const fresh = pick(
+    (v) => !v.tier && !v.obsolete && v.h && /new setting/i.test(v.h.at(-1)[3]) && v.h.at(-1)[0] === '26.8',
+  );
   const prof = (body, extra = '') => `<clickhouse>${extra}<profiles><default>${body}</default></profiles></clickhouse>`;
   const tag = (n, v = '1') => `<${n}>${v}</${n}>`;
   check('experimental flagged', codes(analyze(prof(tag(exp)), { schema })).includes('tier-experimental'));
   check('beta noted', codes(analyze(prof(tag(beta)), { schema }), 'info').includes('tier-beta'));
-  check('allow_feature_tier blocks', codes(analyze(prof(tag(exp), '<allow_feature_tier>1</allow_feature_tier>'), { schema })).includes('tier-blocked'));
-  check('allow_feature_tier 1 allows beta', !codes(analyze(prof(tag(beta), '<allow_feature_tier>1</allow_feature_tier>'), { schema })).includes('tier-blocked'));
-  check('obsolete warned', codes(analyze(prof(tag(obs, schema.session[obs].d)), { schema }), 'warning').includes('obsolete'));
-  check('too new for target', codes(analyze(prof(tag(fresh, schema.session[fresh].d)), { schema, version: '26.3' })).includes('version-too-new'));
-  check('fine on latest', !codes(analyze(prof(tag(fresh, schema.session[fresh].d)), { schema })).includes('version-too-new'));
+  check(
+    'allow_feature_tier blocks',
+    codes(analyze(prof(tag(exp), '<allow_feature_tier>1</allow_feature_tier>'), { schema })).includes('tier-blocked'),
+  );
+  check(
+    'allow_feature_tier 1 allows beta',
+    !codes(analyze(prof(tag(beta), '<allow_feature_tier>1</allow_feature_tier>'), { schema })).includes('tier-blocked'),
+  );
+  check(
+    'obsolete warned',
+    codes(analyze(prof(tag(obs, schema.session[obs].d)), { schema }), 'warning').includes('obsolete'),
+  );
+  check(
+    'too new for target',
+    codes(analyze(prof(tag(fresh, schema.session[fresh].d)), { schema, version: '26.3' })).includes('version-too-new'),
+  );
+  check(
+    'fine on latest',
+    !codes(analyze(prof(tag(fresh, schema.session[fresh].d)), { schema })).includes('version-too-new'),
+  );
   check('digit separators parsed', !!schema.session.allow_experimental_usearch_index);
   // Per-release index (tools/releases.py).
   check('release list', schema.releases[0] === '24.1' && schema.releases.includes('26.8'));
-  check('since from release index', codes(analyze('<clickhouse><merge_tree><apply_patches_on_merge>1</apply_patches_on_merge></merge_tree></clickhouse>', { schema, version: '25.3' })).includes('version-too-new'));
-  check('coordination since', codes(analyze('<clickhouse><keeper_server><server_id>1</server_id><coordination_settings><use_new_dispatcher>1</use_new_dispatcher></coordination_settings></keeper_server></clickhouse>', { schema, mode: 'keeper', version: '26.3' })).includes('version-too-new'));
+  check(
+    'since from release index',
+    codes(
+      analyze('<clickhouse><merge_tree><apply_patches_on_merge>1</apply_patches_on_merge></merge_tree></clickhouse>', {
+        schema,
+        version: '25.3',
+      }),
+    ).includes('version-too-new'),
+  );
+  check(
+    'coordination since',
+    codes(
+      analyze(
+        '<clickhouse><keeper_server><server_id>1</server_id><coordination_settings><use_new_dispatcher>1</use_new_dispatcher></coordination_settings></keeper_server></clickhouse>',
+        { schema, mode: 'keeper', version: '26.3' },
+      ),
+    ).includes('version-too-new'),
+  );
   const ice = tag('allow_experimental_time_series_aggregate_functions');
-  check('removed setting still valid on old target', codes(analyze(prof(ice), { schema, version: '26.3' }), 'info').includes('removed-later') && !codes(analyze(prof(ice), { schema, version: '26.3' })).includes('unknown-setting'));
+  check(
+    'removed setting still valid on old target',
+    codes(analyze(prof(ice), { schema, version: '26.3' }), 'info').includes('removed-later') &&
+      !codes(analyze(prof(ice), { schema, version: '26.3' })).includes('unknown-setting'),
+  );
   check('removed setting on latest', codes(analyze(prof(ice), { schema }), 'error').includes('removed-setting'));
   // Enum values, Keeper flags, four-letter words, defaults and tiers per release.
   const lb = prof(tag('load_balancing', 'hostname_longest_common_prefix'));
   check('enum value too new for target', codes(analyze(lb, { schema, version: '26.3' })).includes('version-too-new'));
   check('enum value fine on latest', !codes(analyze(lb, { schema })).includes('version-too-new'));
-  const kc = (body, version) => analyze(`<clickhouse><keeper_server><server_id>1</server_id>${body}</keeper_server></clickhouse>`, { schema, mode: 'keeper', version });
-  check('keeper flag too new', codes(kc('<feature_flags><create_ttl>1</create_ttl></feature_flags>', '26.3')).includes('version-too-new'));
-  check('keeper flag ok on its release', !codes(kc('<feature_flags><create_ttl>1</create_ttl></feature_flags>', '26.6')).includes('version-too-new'));
-  check('4lw too new', codes(kc('<four_letter_word_white_list>ruok,rcfg</four_letter_word_white_list>', '25.8')).includes('version-too-new'));
-  const mc = (version) => analyze('<clickhouse><max_connections>100</max_connections></clickhouse>', { schema, version }).recognized.find((r) => r.name === 'max_connections');
-  check('server default per release', mc('24.8')?.def === '1024' && mc('25.3')?.def === '4096', `${mc('24.8')?.def} ${mc('25.3')?.def}`);
+  const kc = (body, version) =>
+    analyze(`<clickhouse><keeper_server><server_id>1</server_id>${body}</keeper_server></clickhouse>`, {
+      schema,
+      mode: 'keeper',
+      version,
+    });
+  check(
+    'keeper flag too new',
+    codes(kc('<feature_flags><create_ttl>1</create_ttl></feature_flags>', '26.3')).includes('version-too-new'),
+  );
+  check(
+    'keeper flag ok on its release',
+    !codes(kc('<feature_flags><create_ttl>1</create_ttl></feature_flags>', '26.6')).includes('version-too-new'),
+  );
+  check(
+    '4lw too new',
+    codes(kc('<four_letter_word_white_list>ruok,rcfg</four_letter_word_white_list>', '25.8')).includes(
+      'version-too-new',
+    ),
+  );
+  const mc = (version) =>
+    analyze('<clickhouse><max_connections>100</max_connections></clickhouse>', { schema, version }).recognized.find(
+      (r) => r.name === 'max_connections',
+    );
+  check(
+    'server default per release',
+    mc('24.8')?.def === '1024' && mc('25.3')?.def === '4096',
+    `${mc('24.8')?.def} ${mc('25.3')?.def}`,
+  );
   check('server default history shown', /25\.1: 1024 → 4096/.test(mc('latest')?.hist || ''), mc('latest')?.hist);
   const jt = prof(tag('enable_join_transitive_predicates'));
-  check('tier at target release', analyze(jt, { schema, version: '26.4' }).findings.some((f) => f.code === 'tier-experimental' && /26\.4/.test(f.msg)));
+  check(
+    'tier at target release',
+    analyze(jt, { schema, version: '26.4' }).findings.some(
+      (f) => f.code === 'tier-experimental' && /26\.4/.test(f.msg),
+    ),
+  );
   check('tier on latest', codes(analyze(jt, { schema }), 'info').includes('tier-beta'));
-  check('removed server key is an error on strict releases', codes(analyze('<clickhouse><dns_cache_max_size>1</dns_cache_max_size></clickhouse>', { schema }), 'error').includes('removed-setting'));
-  check('removed server key warns on older releases', codes(analyze('<clickhouse><dns_cache_max_size>1</dns_cache_max_size></clickhouse>', { schema, version: '26.3' }), 'warning').includes('removed-setting'));
+  check(
+    'removed server key is an error on strict releases',
+    codes(analyze('<clickhouse><dns_cache_max_size>1</dns_cache_max_size></clickhouse>', { schema }), 'error').includes(
+      'removed-setting',
+    ),
+  );
+  check(
+    'removed server key warns on older releases',
+    codes(
+      analyze('<clickhouse><dns_cache_max_size>1</dns_cache_max_size></clickhouse>', { schema, version: '26.3' }),
+      'warning',
+    ).includes('removed-setting'),
+  );
   // Unknown top-level elements stop the server from 26.8 (ServerSettings::checkUnknownSettings).
   const typo = '<clickhouse><listen_hots>::</listen_hots><path>/x/</path></clickhouse>';
-  check('unknown top-level key fatal on latest', analyze(typo, { schema }).findings.some((f) => f.sev === 'error' && /UNKNOWN_ELEMENT_IN_CONFIG/.test(f.msg)));
-  check('unknown top-level key not fatal on 26.3', !analyze(typo, { schema, version: '26.3' }).findings.some((f) => f.sev === 'error'));
-  check('skip_check_for_incorrect_settings disables it', !analyze(typo.replace('<path>', '<skip_check_for_incorrect_settings>1</skip_check_for_incorrect_settings><path>'), { schema }).findings.some((f) => /UNKNOWN_ELEMENT/.test(f.msg)));
-  check('known sections accepted', !analyze('<clickhouse><graphite_rollup_x><default><function>any</function></default></graphite_rollup_x><macros><a>1</a></macros></clickhouse>', { schema }).findings.some((f) => /UNKNOWN_ELEMENT/.test(f.msg)));
+  check(
+    'unknown top-level key fatal on latest',
+    analyze(typo, { schema }).findings.some((f) => f.sev === 'error' && /UNKNOWN_ELEMENT_IN_CONFIG/.test(f.msg)),
+  );
+  check(
+    'unknown top-level key not fatal on 26.3',
+    !analyze(typo, { schema, version: '26.3' }).findings.some((f) => f.sev === 'error'),
+  );
+  check(
+    'skip_check_for_incorrect_settings disables it',
+    !analyze(typo.replace('<path>', '<skip_check_for_incorrect_settings>1</skip_check_for_incorrect_settings><path>'), {
+      schema,
+    }).findings.some((f) => /UNKNOWN_ELEMENT/.test(f.msg)),
+  );
+  check(
+    'known sections accepted',
+    !analyze(
+      '<clickhouse><graphite_rollup_x><default><function>any</function></default></graphite_rollup_x><macros><a>1</a></macros></clickhouse>',
+      { schema },
+    ).findings.some((f) => /UNKNOWN_ELEMENT/.test(f.msg)),
+  );
 }
 
 // Share links: redaction and round trip.
@@ -213,47 +462,155 @@ for (const [f, want] of Object.entries(expect)) {
   const { redact, shareableState, encodeState, decodeState } = await import('../js/share.js');
   const x = redact(fx('users.xml').replace('<password></password>', '<password>hunter2</password>'));
   check('redacts password', !x.text.includes('hunter2') && x.count >= 1);
-  const y = redact('users:\n  u:\n    password_sha256_hex: "65e84be33532fb784c48129675f9eff3a682b27168c0ea744b2cf58ee02337c5"\n');
+  const y = redact(
+    'users:\n  u:\n    password_sha256_hex: "65e84be33532fb784c48129675f9eff3a682b27168c0ea744b2cf58ee02337c5"\n',
+  );
   check('hex keeps length', /"0{64}"/.test(y.text));
-  const { state: st, redacted } = shareableState({ files: [{ path: 'users.xml', text: '<clickhouse><users><a><password>p</password></a></users></clickhouse>' }], subst: 'DB_PASSWORD=x\nN=1', version: '25.8', view: 'merged', mainPath: '', active: 0 });
+  const { state: st, redacted } = shareableState({
+    files: [{ path: 'users.xml', text: '<clickhouse><users><a><password>p</password></a></users></clickhouse>' }],
+    subst: 'DB_PASSWORD=x\nN=1',
+    version: '25.8',
+    view: 'merged',
+    mainPath: '',
+    active: 0,
+  });
   check('share redaction count', redacted === 2, String(redacted));
   const back = await decodeState(await encodeState(st));
-  check('share round trip', back.files[0].text.includes('REDACTED') && back.subst === 'DB_PASSWORD=REDACTED\nN=1' && back.version === '25.8');
+  check(
+    'share round trip',
+    back.files[0].text.includes('REDACTED') && back.subst === 'DB_PASSWORD=REDACTED\nN=1' && back.version === '25.8',
+  );
 }
 
 // Keeper ensemble cross-check.
 {
-  const k = (id, raft, extra = '') => `<clickhouse><keeper_server><tcp_port>9181</tcp_port><server_id>${id}</server_id><log_storage_path>/a/</log_storage_path><snapshot_storage_path>/b/</snapshot_storage_path><coordination_settings>${extra}</coordination_settings><raft_configuration>${raft}</raft_configuration></keeper_server></clickhouse>`;
-  const R = (l) => l.map(([i, h, p]) => `<server><id>${i}</id><hostname>${h}</hostname><port>${p}</port></server>`).join('');
-  const full = [[1, 'k1', 9234], [2, 'k2', 9234], [3, 'k3', 9234]];
-  const set = (fs) => analyzeSet(fs.map(([path, text]) => ({ path, text })), { schema });
-  let r = set([['keeper1.xml', k(1, R(full))], ['keeper2.xml', k(2, R(full))], ['keeper3.xml', k(3, R(full))]]);
+  const k = (id, raft, extra = '') =>
+    `<clickhouse><keeper_server><tcp_port>9181</tcp_port><server_id>${id}</server_id><log_storage_path>/a/</log_storage_path><snapshot_storage_path>/b/</snapshot_storage_path><coordination_settings>${extra}</coordination_settings><raft_configuration>${raft}</raft_configuration></keeper_server></clickhouse>`;
+  const R = (l) =>
+    l.map(([i, h, p]) => `<server><id>${i}</id><hostname>${h}</hostname><port>${p}</port></server>`).join('');
+  const full = [
+    [1, 'k1', 9234],
+    [2, 'k2', 9234],
+    [3, 'k3', 9234],
+  ];
+  const set = (fs) =>
+    analyzeSet(
+      fs.map(([path, text]) => ({ path, text })),
+      { schema },
+    );
+  let r = set([
+    ['keeper1.xml', k(1, R(full))],
+    ['keeper2.xml', k(2, R(full))],
+    ['keeper3.xml', k(3, R(full))],
+  ]);
   check('ensemble clean', r.cross.length === 0, JSON.stringify(r.cross));
-  r = set([['keeper1.xml', k(1, R(full))], ['keeper2.xml', k(1, R([[1, 'k1', 9234], [2, 'k2', 9999], [3, 'k3', 9234]]), '<election_timeout_lower_bound_ms>500</election_timeout_lower_bound_ms>')]]);
+  r = set([
+    ['keeper1.xml', k(1, R(full))],
+    [
+      'keeper2.xml',
+      k(
+        1,
+        R([
+          [1, 'k1', 9234],
+          [2, 'k2', 9999],
+          [3, 'k3', 9234],
+        ]),
+        '<election_timeout_lower_bound_ms>500</election_timeout_lower_bound_ms>',
+      ),
+    ],
+  ]);
   const cc = r.cross.map((f) => f.code);
-  for (const c of ['ensemble-dup-id', 'ensemble-raft-diff', 'ensemble-coord-diff', 'ensemble-partial']) check(`ensemble ${c}`, cc.includes(c), cc.join(','));
-  r = set([['config.xml', '<clickhouse><zookeeper><node><host>k1</host><port>9234</port></node></zookeeper></clickhouse>'], ['keeper1.xml', k(1, R(full))]]);
-  check('zk points at raft port', r.cross.some((f) => f.code === 'zk-raft-port' && f.file === 'config.xml'));
+  for (const c of ['ensemble-dup-id', 'ensemble-raft-diff', 'ensemble-coord-diff', 'ensemble-partial'])
+    check(`ensemble ${c}`, cc.includes(c), cc.join(','));
+  {
+    // The message names keeper1.xml; its link must land on the conflicting <port> of server 2 there.
+    const nl = (t) => t.replace(/></g, '>\n<');
+    const k1 = nl(k(1, R(full)));
+    const k2 = nl(k(2, R([full[0], [2, 'k2', 9999], full[2]])));
+    const d = set([
+      ['keeper1.xml', k1],
+      ['keeper2.xml', k2],
+    ]).cross.find((f) => f.code === 'ensemble-raft-diff');
+    const at = d?.related?.[0];
+    const src = k1.split('\n');
+    check(
+      'raft diff links the other file',
+      at && at.file === 'keeper1.xml' && d.msg.includes(at.text) && /<port>9234</.test(src[at.line - 1] || ''),
+      JSON.stringify(at),
+    );
+  }
+  r = set([
+    ['config.xml', '<clickhouse><zookeeper><node><host>k1</host><port>9234</port></node></zookeeper></clickhouse>'],
+    ['keeper1.xml', k(1, R(full))],
+  ]);
+  check(
+    'zk points at raft port',
+    r.cross.some((f) => f.code === 'zk-raft-port' && f.file === 'config.xml'),
+  );
   check('loose keeper file is separate', r.plan.find((p) => p.path === 'keeper1.xml').role === 'separate');
 }
 
 // Logger rotation, object storage disks, encryption keys.
 {
-  const lg = (inner) => codes(analyze(`<clickhouse><logger><log>/x.log</log>${inner}</logger></clickhouse>`, { schema }));
-  for (const v of ['100M', '1G', '1000000', 'daily', '100M,daily', '10 minutes', '12:00', 'never', '100 M']) check(`rotation ok ${v}`, !lg(`<size>${v}</size>`).includes('logger-rotation'));
-  for (const v of ['1GB', '100m', '10Mi', 'big', '0']) check(`rotation bad ${v}`, lg(`<size>${v}</size>`).includes('logger-rotation'));
+  const lg = (inner) =>
+    codes(analyze(`<clickhouse><logger><log>/x.log</log>${inner}</logger></clickhouse>`, { schema }));
+  for (const v of ['100M', '1G', '1000000', 'daily', '100M,daily', '10 minutes', '12:00', 'never', '100 M'])
+    check(`rotation ok ${v}`, !lg(`<size>${v}</size>`).includes('logger-rotation'));
+  for (const v of ['1GB', '100m', '10Mi', 'big', '0'])
+    check(`rotation bad ${v}`, lg(`<size>${v}</size>`).includes('logger-rotation'));
   check('count 0', lg('<count>0</count>').includes('logger-count'));
   check('count none', lg('<count>none</count>').includes('logger-count-none'));
-  const st = (disk) => codes(analyze(`<clickhouse><storage_configuration><disks>${disk}</disks></storage_configuration></clickhouse>`, { schema }));
+  const st = (disk) =>
+    codes(
+      analyze(`<clickhouse><storage_configuration><disks>${disk}</disks></storage_configuration></clickhouse>`, {
+        schema,
+      }),
+    );
   check('s3 no endpoint', st('<d><type>s3</type></d>').includes('s3-endpoint'));
-  check('s3 half creds', st('<d><type>s3</type><endpoint>https://b.s3.amazonaws.com/r/</endpoint><secret_access_key>x</secret_access_key></d>').includes('s3-creds'));
-  check('s3 ok', !st('<d><type>s3</type><endpoint>https://b.s3.amazonaws.com/r/</endpoint><access_key_id>a</access_key_id><secret_access_key>x</secret_access_key></d>').some((c) => c.startsWith('s3-')));
-  check('encrypted disk key size', st('<e><type>encrypted</type><disk>default</disk><algorithm>aes_256_ctr</algorithm><key>0123456789abcdef</key></e>').includes('enc-key-size'));
-  check('encrypted disk ok', !st('<e><type>encrypted</type><disk>default</disk><key>0123456789abcdef</key></e>').some((c) => c.startsWith('enc-')));
-  const ec = (inner) => codes(analyze(`<clickhouse><encryption_codecs>${inner}</encryption_codecs></clickhouse>`, { schema }));
-  check('codec ok', !ec('<aes_128_gcm_siv><key_hex>00112233445566778899aabbccddeeff</key_hex></aes_128_gcm_siv>').some((c) => c.startsWith('enc-')));
-  check('codec multi key needs current', ec('<aes_128_gcm_siv><key_hex id="1">00112233445566778899aabbccddeeff</key_hex><key_hex id="2">00112233445566778899aabbccddeeff</key_hex></aes_128_gcm_siv>').includes('enc-current-key'));
-  check('codec nonce', ec('<aes_256_gcm_siv><key>0123456789abcdef0123456789abcdef</key><nonce>short</nonce></aes_256_gcm_siv>').includes('enc-nonce'));
+  check(
+    's3 half creds',
+    st(
+      '<d><type>s3</type><endpoint>https://b.s3.amazonaws.com/r/</endpoint><secret_access_key>x</secret_access_key></d>',
+    ).includes('s3-creds'),
+  );
+  check(
+    's3 ok',
+    !st(
+      '<d><type>s3</type><endpoint>https://b.s3.amazonaws.com/r/</endpoint><access_key_id>a</access_key_id><secret_access_key>x</secret_access_key></d>',
+    ).some((c) => c.startsWith('s3-')),
+  );
+  check(
+    'encrypted disk key size',
+    st(
+      '<e><type>encrypted</type><disk>default</disk><algorithm>aes_256_ctr</algorithm><key>0123456789abcdef</key></e>',
+    ).includes('enc-key-size'),
+  );
+  check(
+    'encrypted disk ok',
+    !st('<e><type>encrypted</type><disk>default</disk><key>0123456789abcdef</key></e>').some((c) =>
+      c.startsWith('enc-'),
+    ),
+  );
+  const ec = (inner) =>
+    codes(analyze(`<clickhouse><encryption_codecs>${inner}</encryption_codecs></clickhouse>`, { schema }));
+  check(
+    'codec ok',
+    !ec('<aes_128_gcm_siv><key_hex>00112233445566778899aabbccddeeff</key_hex></aes_128_gcm_siv>').some((c) =>
+      c.startsWith('enc-'),
+    ),
+  );
+  check(
+    'codec multi key needs current',
+    ec(
+      '<aes_128_gcm_siv><key_hex id="1">00112233445566778899aabbccddeeff</key_hex><key_hex id="2">00112233445566778899aabbccddeeff</key_hex></aes_128_gcm_siv>',
+    ).includes('enc-current-key'),
+  );
+  check(
+    'codec nonce',
+    ec('<aes_256_gcm_siv><key>0123456789abcdef0123456789abcdef</key><nonce>short</nonce></aes_256_gcm_siv>').includes(
+      'enc-nonce',
+    ),
+  );
 }
 
 // Editor assistance.
@@ -261,33 +618,79 @@ for (const [f, want] of Object.entries(expect)) {
   const { contextPath, complete, lookup } = await import('../js/assist.js');
   const x = '<clickhouse>\n  <logger>\n    <le';
   check('xml context', JSON.stringify(contextPath(x, x.length, 'xml')) === '["logger"]');
-  check('xml context closes', JSON.stringify(contextPath('<clickhouse><logger><level>x</level></logger><', 46, 'xml')) === '[]');
-  check('yaml context', JSON.stringify(contextPath('profiles:\n  default:\n    max_', 30, 'yaml')) === '["profiles","default"]');
+  check(
+    'xml context closes',
+    JSON.stringify(contextPath('<clickhouse><logger><level>x</level></logger><', 46, 'xml')) === '[]',
+  );
+  check(
+    'yaml context',
+    JSON.stringify(contextPath('profiles:\n  default:\n    max_', 30, 'yaml')) === '["profiles","default"]',
+  );
   check('complete profile', complete(schema, ['profiles', 'default'], 'max_thr')[0] === 'max_threads');
-  check('complete coordination', complete(schema, ['keeper_server', 'coordination_settings'], 'heart')[0] === 'heart_beat_interval_ms');
+  check(
+    'complete coordination',
+    complete(schema, ['keeper_server', 'coordination_settings'], 'heart')[0] === 'heart_beat_interval_ms',
+  );
   check('lookup server', lookup(schema, [], 'max_connections')?.scope === 'server setting');
-  check('lookup with path', lookup(schema, ['query_cache'], 'max_size_in_bytes')?.name === 'query_cache.max_size_in_bytes');
+  check(
+    'lookup with path',
+    lookup(schema, ['query_cache'], 'max_size_in_bytes')?.name === 'query_cache.max_size_in_bytes',
+  );
 }
 
 // Move quick fix.
 {
   const { moveElement } = await import('../js/fix.js');
-  const x = '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <force_sync>false</force_sync>\n    </keeper_server>\n</clickhouse>\n';
+  const x =
+    '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <force_sync>false</force_sync>\n    </keeper_server>\n</clickhouse>\n';
   const mx = moveElement(x, 'xml', 4, 'force_sync', 'keeper_server.coordination_settings');
-  check('move xml creates section', mx === '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <coordination_settings>\n            <force_sync>false</force_sync>\n        </coordination_settings>\n    </keeper_server>\n</clickhouse>\n', mx);
+  check(
+    'move xml creates section',
+    mx ===
+      '<clickhouse>\n    <keeper_server>\n        <tcp_port>9181</tcp_port>\n        <coordination_settings>\n            <force_sync>false</force_sync>\n        </coordination_settings>\n    </keeper_server>\n</clickhouse>\n',
+    mx,
+  );
   const r = analyze(mx, { schema, mode: 'keeper' });
   check('moved setting recognised', !codes(r).includes('unknown-key'), codes(r).join());
-  const top = '<clickhouse>\n    <logger/>\n    <keeper_server>\n        <listen_host>::</listen_host>\n    </keeper_server>\n    <path>/x/</path>\n</clickhouse>\n';
-  check('move to top level lands beside its section', moveElement(top, 'xml', 4, 'listen_host', '') === '<clickhouse>\n    <logger/>\n    <listen_host>::</listen_host>\n    <keeper_server>\n    </keeper_server>\n    <path>/x/</path>\n</clickhouse>\n');
+  const top =
+    '<clickhouse>\n    <logger/>\n    <keeper_server>\n        <listen_host>::</listen_host>\n    </keeper_server>\n    <path>/x/</path>\n</clickhouse>\n';
+  check(
+    'move to top level lands beside its section',
+    moveElement(top, 'xml', 4, 'listen_host', '') ===
+      '<clickhouse>\n    <logger/>\n    <listen_host>::</listen_host>\n    <keeper_server>\n    </keeper_server>\n    <path>/x/</path>\n</clickhouse>\n',
+  );
   const early = '<clickhouse>\n    <merge_tree>\n        <a>1</a>\n    </merge_tree>\n    <b>2</b>\n</clickhouse>\n';
-  check('move into an earlier section', moveElement(early, 'xml', 5, 'b', 'merge_tree') === '<clickhouse>\n    <merge_tree>\n        <a>1</a>\n        <b>2</b>\n    </merge_tree>\n</clickhouse>\n');
-  check('move yaml to top level', moveElement('logger:\n  level: trace\nkeeper_server:\n  tcp_port: 1\n  listen_host: "::"\n', 'yaml', 5, 'listen_host', '') === 'logger:\n  level: trace\nlisten_host: "::"\nkeeper_server:\n  tcp_port: 1\n');
+  check(
+    'move into an earlier section',
+    moveElement(early, 'xml', 5, 'b', 'merge_tree') ===
+      '<clickhouse>\n    <merge_tree>\n        <a>1</a>\n        <b>2</b>\n    </merge_tree>\n</clickhouse>\n',
+  );
+  check(
+    'move yaml to top level',
+    moveElement(
+      'logger:\n  level: trace\nkeeper_server:\n  tcp_port: 1\n  listen_host: "::"\n',
+      'yaml',
+      5,
+      'listen_host',
+      '',
+    ) === 'logger:\n  level: trace\nlisten_host: "::"\nkeeper_server:\n  tcp_port: 1\n',
+  );
   check('move xml no-op refused', moveElement(x, 'xml', 4, 'force_sync', 'keeper_server') === null);
-  const y = 'keeper_server:\n  tcp_port: 9181\n  force_sync: false\n  coordination_settings:\n    operation_timeout_ms: 10000\n';
-  check('move yaml into existing section', moveElement(y, 'yaml', 3, 'force_sync', 'keeper_server.coordination_settings') === 'keeper_server:\n  tcp_port: 9181\n  coordination_settings:\n    operation_timeout_ms: 10000\n    force_sync: false\n');
-  const mtOnly = Object.keys(schema.mergeTree).find((k) => !schema.session[k] && !schema.server[k] && !schema.coordination[k]);
+  const y =
+    'keeper_server:\n  tcp_port: 9181\n  force_sync: false\n  coordination_settings:\n    operation_timeout_ms: 10000\n';
+  check(
+    'move yaml into existing section',
+    moveElement(y, 'yaml', 3, 'force_sync', 'keeper_server.coordination_settings') ===
+      'keeper_server:\n  tcp_port: 9181\n  coordination_settings:\n    operation_timeout_ms: 10000\n    force_sync: false\n',
+  );
+  const mtOnly = Object.keys(schema.mergeTree).find(
+    (k) => !schema.session[k] && !schema.server[k] && !schema.coordination[k],
+  );
   const at = analyze(`<clickhouse><${mtOnly}>1</${mtOnly}></clickhouse>`, { schema });
-  check('mergetree-at-root offers move', at.findings.some((f) => f.code === 'mergetree-at-root' && f.fix?.kind === 'move'));
+  check(
+    'mergetree-at-root offers move',
+    at.findings.some((f) => f.code === 'mergetree-at-root' && f.fix?.kind === 'move'),
+  );
 }
 
 // Hard-wrapped paste.
@@ -296,52 +699,125 @@ for (const [f, want] of Object.entries(expect)) {
   const w = fx('wrapped_keeper.xml');
   check('hard wrap found', findWrappedLines(w).join() === '5,14,16', findWrappedLines(w).join());
   const r0 = analyze(w, { schema });
-  check('hard wrap finding on parse error', r0.findings[0].code === 'hard-wrap' && r0.findings[0].fix.kind === 'unwrap');
+  check(
+    'hard wrap finding on parse error',
+    r0.findings[0].code === 'hard-wrap' && r0.findings[0].fix.kind === 'unwrap',
+  );
   const r1 = analyze(unwrapLines(w), { schema });
   check('unwrapped parses', !r1.parseError && !codes(r1).includes('hard-wrap'), codes(r1).join());
-  for (const [name, v] of [['trailing spaces', w.replace(/\n/g, '  \n')], ['CRLF', w.replace(/\n/g, '\r\n')], ['indented paste', w.split('\n').map((l) => (l ? '    ' + l : l)).join('\n')]]) {
+  for (const [name, v] of [
+    ['trailing spaces', w.replace(/\n/g, '  \n')],
+    ['CRLF', w.replace(/\n/g, '\r\n')],
+    [
+      'indented paste',
+      w
+        .split('\n')
+        .map((l) => (l ? '    ' + l : l))
+        .join('\n'),
+    ],
+  ]) {
     const u = unwrapLines(v);
-    check(`hard wrap with ${name}`, findWrappedLines(v).join() === '5,14,16' && !analyze(u, { schema }).parseError, findWrappedLines(v).join());
+    check(
+      `hard wrap with ${name}`,
+      findWrappedLines(v).join() === '5,14,16' && !analyze(u, { schema }).parseError,
+      findWrappedLines(v).join(),
+    );
   }
-  check('CRLF kept when joining', unwrapLines(w.replace(/\n/g, '\r\n')).split('\n').every((l) => !l || l.endsWith('\r')));
-  check('multi-line SQL not treated as wrap', !findWrappedLines('<query>SELECT 1\nFROM t</query>\n<x>' + 'y'.repeat(60) + '</x>').length);
-  check('clean files have no wraps', ['config.xml', 'keeper_config.xml', 'users.xml', 'bad_server.xml'].every((f) => !findWrappedLines(fx(f)).length));
+  check(
+    'CRLF kept when joining',
+    unwrapLines(w.replace(/\n/g, '\r\n'))
+      .split('\n')
+      .every((l) => !l || l.endsWith('\r')),
+  );
+  check(
+    'multi-line SQL not treated as wrap',
+    !findWrappedLines('<query>SELECT 1\nFROM t</query>\n<x>' + 'y'.repeat(60) + '</x>').length,
+  );
+  check(
+    'clean files have no wraps',
+    ['config.xml', 'keeper_config.xml', 'users.xml', 'bad_server.xml'].every((f) => !findWrappedLines(fx(f)).length),
+  );
 }
 
 // Syntax colouring must reproduce the text exactly.
 {
   const { highlight } = await import('../js/highlight.js');
-  const plain = (h) => h.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-  const cases = [['xml', fx('config.xml')], ['yaml', fx('config.yaml')], ['yaml', fx('bad_server.yaml')], ['xml', fx('broken.xml')], ['xml', '<a x="1" incl="y"><!-- c\n --><![CDATA[<z>]]></a><b'], ['xml', '<a>1 & 2 < 3</a'],
-    ['yaml', 'a: 1 # c\nb: "x # y"\n- k: |\n    l1 # not\n    l2\nc: [1, 2]\n"@remove": 1\n']];
+  const plain = (h) =>
+    h
+      .replace(/<[^>]+>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&');
+  const cases = [
+    ['xml', fx('config.xml')],
+    ['yaml', fx('config.yaml')],
+    ['yaml', fx('bad_server.yaml')],
+    ['xml', fx('broken.xml')],
+    ['xml', '<a x="1" incl="y"><!-- c\n --><![CDATA[<z>]]></a><b'],
+    ['xml', '<a>1 & 2 < 3</a'],
+    ['yaml', 'a: 1 # c\nb: "x # y"\n- k: |\n    l1 # not\n    l2\nc: [1, 2]\n"@remove": 1\n'],
+  ];
   for (const [f, t] of cases) check(`highlight round-trip ${f}`, plain(highlight(t, f)) === t, t.slice(0, 40));
   check('highlight yaml block scalar plain', !highlight('k: |\n  # x\n', 'yaml').includes('hl-com'));
   check('highlight xml subst attr', highlight('<a from_env="X"/>', 'xml').includes('hl-kw'));
 }
 
-
 // References, listen addresses and ports.
 {
   const c = (x) => codes(analyze(`<clickhouse>${x}</clickhouse>`, { schema }));
-  const sc = '<storage_configuration><disks><d1><path>/d1/</path></d1></disks><policies><hot><volumes><v><disk>d1</disk></v></volumes></hot><two><volumes><a><disk>d1</disk></a><b><disk>default</disk></b></volumes></two></policies></storage_configuration>';
+  const sc =
+    '<storage_configuration><disks><d1><path>/d1/</path></d1></disks><policies><hot><volumes><v><disk>d1</disk></v></volumes></hot><two><volumes><a><disk>d1</disk></a><b><disk>default</disk></b></volumes></two></policies></storage_configuration>';
   check('tmp_policy unknown', c(`${sc}<tmp_policy>hott</tmp_policy>`).includes('policy-undefined'));
   check('tmp_policy known', !c(`${sc}<tmp_policy>hot</tmp_policy>`).includes('policy-undefined'));
   check('tmp_policy two volumes', c(`${sc}<tmp_policy>two</tmp_policy>`).includes('tmp-policy-volumes'));
-  check('temporary_data_in_cache unknown disk', c('<temporary_data_in_cache>cache1</temporary_data_in_cache>').includes('disk-undefined'));
-  check('merge_tree storage_policy unknown', c(`${sc}<merge_tree><storage_policy>cold</storage_policy></merge_tree>`).includes('policy-undefined'));
-  check('query_log storage_policy unknown', c('<query_log><database>system</database><table>query_log</table><storage_policy>x</storage_policy></query_log>').includes('policy-undefined'));
-  check('macro undefined in default_replica_path', c('<macros><replica>r1</replica></macros><default_replica_path>/ch/{layer}/{shard}/{uuid}</default_replica_path>').includes('macro-undefined'));
-  check('builtin macros ok', !c('<macros><shard>1</shard><replica>r1</replica></macros><default_replica_path>/ch/{database}/{table}/{uuid}/{shard}</default_replica_path>').includes('macro-undefined'));
+  check(
+    'temporary_data_in_cache unknown disk',
+    c('<temporary_data_in_cache>cache1</temporary_data_in_cache>').includes('disk-undefined'),
+  );
+  check(
+    'merge_tree storage_policy unknown',
+    c(`${sc}<merge_tree><storage_policy>cold</storage_policy></merge_tree>`).includes('policy-undefined'),
+  );
+  check(
+    'query_log storage_policy unknown',
+    c(
+      '<query_log><database>system</database><table>query_log</table><storage_policy>x</storage_policy></query_log>',
+    ).includes('policy-undefined'),
+  );
+  check(
+    'macro undefined in default_replica_path',
+    c(
+      '<macros><replica>r1</replica></macros><default_replica_path>/ch/{layer}/{shard}/{uuid}</default_replica_path>',
+    ).includes('macro-undefined'),
+  );
+  check(
+    'builtin macros ok',
+    !c(
+      '<macros><shard>1</shard><replica>r1</replica></macros><default_replica_path>/ch/{database}/{table}/{uuid}/{shard}</default_replica_path>',
+    ).includes('macro-undefined'),
+  );
   check('special macro defined', c('<macros><table>x</table></macros>').includes('macro-special'));
-  check('macro default missing', c('<zookeeper><node><host>k</host><port>9181</port></node></zookeeper><macros><shard>1</shard></macros>').includes('macro-default-missing'));
+  check(
+    'macro default missing',
+    c('<zookeeper><node><host>k</host><port>9181</port></node></zookeeper><macros><shard>1</shard></macros>').includes(
+      'macro-default-missing',
+    ),
+  );
   check('listen dup', c('<listen_host>::</listen_host><listen_host>::</listen_host>').includes('listen-dup'));
-  const rs = '<remote_servers><c><shard><replica><host>ch1</host><port>9000</port></replica><replica><host>ch2</host><port>9000</port></replica></shard></c></remote_servers>';
+  const rs =
+    '<remote_servers><c><shard><replica><host>ch1</host><port>9000</port></replica><replica><host>ch2</host><port>9000</port></replica></shard></c></remote_servers>';
   check('listen loopback with cluster', c(`<listen_host>127.0.0.1</listen_host>${rs}`).includes('listen-local-only'));
   check('listen default with cluster', c(rs).includes('listen-default-local'));
   check('listen any with cluster', !c(`<listen_host>::</listen_host>${rs}`).some((x) => x.startsWith('listen-')));
   check('privileged port', c('<http_port>80</http_port>').includes('port-privileged'));
-  check('protocols port dup', c('<tcp_port>9000</tcp_port><protocols><p><type>tcp</type><port>9000</port></p></protocols>').includes('port-dup'));
-  check('default_profile missing in same file', c('<default_profile>web</default_profile><profiles><default/></profiles>').includes('ref-profile'));
+  check(
+    'protocols port dup',
+    c('<tcp_port>9000</tcp_port><protocols><p><type>tcp</type><port>9000</port></p></protocols>').includes('port-dup'),
+  );
+  check(
+    'default_profile missing in same file',
+    c('<default_profile>web</default_profile><profiles><default/></profiles>').includes('ref-profile'),
+  );
   check('default_profile ok', !c('<tcp_port>9000</tcp_port><profiles><default/></profiles>').includes('ref-profile'));
 }
 
@@ -352,39 +828,155 @@ for (const [f, want] of Object.entries(expect)) {
     <zookeeper><node><host>k1</host><port>9181</port></node></zookeeper>
     <macros><shard>${shard}</shard><replica>${replica}</replica></macros>${extra}</clickhouse>`;
   const run = (files) => analyzeSet(files, { schema });
-  const ok = run([{ path: 'ch1/config.xml', text: node(1, 1, 'ch1') }, { path: 'ch2/config.xml', text: node(2, 1, 'ch2') }, { path: 'ch3/config.xml', text: node(3, 2, 'ch3') }]);
+  const ok = run([
+    { path: 'ch1/config.xml', text: node(1, 1, 'ch1') },
+    { path: 'ch2/config.xml', text: node(2, 1, 'ch2') },
+    { path: 'ch3/config.xml', text: node(3, 2, 'ch3') },
+  ]);
   check('nodes consistent', !ok.cross.some((f) => f.code.startsWith('node-')), ok.cross.map((f) => f.code).join());
-  const dup = run([{ path: 'ch1/config.xml', text: node(1, 1, 'ch1') }, { path: 'ch2/config.xml', text: node(2, 1, 'ch1') }]);
-  check('nodes dup replica', dup.cross.some((f) => f.code === 'node-dup-replica'));
-  const wrongShard = run([{ path: 'ch1/config.xml', text: node(1, 1, 'ch1') }, { path: 'ch3/config.xml', text: node(3, 1, 'ch3') }]);
-  check('nodes shard mismatch', wrongShard.cross.some((f) => f.code === 'node-shard-mismatch' && f.file === 'ch3/config.xml'));
-  const zk = run([{ path: 'ch1/config.xml', text: node(1, 1, 'ch1') }, { path: 'ch2/config.xml', text: node(2, 1, 'ch2').replace('k1', 'k9') }]);
-  check('nodes zookeeper differs', zk.cross.some((f) => f.code === 'node-zk-diff'));
-  const fr = run([{ path: 'ch1/config.xml', text: node(1, 1, 'ch1') }, { path: 'ch2/config.xml', text: node(2, 1, 'ch2').replace(/<macros>.*<\/macros>/, '') },
-    { path: 'ch2/config.d/macros.xml', text: '<clickhouse><macros><shard>1</shard><replica>ch1</replica></macros></clickhouse>' }]);
-  check('nodes merged with config.d', fr.cross.some((f) => f.code === 'node-dup-replica'), fr.cross.map((f) => f.code).join());
-  const pw = run([{ path: 'a/config.xml', text: node(1, 1, 'ch1', '<interserver_http_credentials><user>i</user><password>p1</password></interserver_http_credentials>') },
-    { path: 'b/config.xml', text: node(2, 1, 'ch2', '<interserver_http_credentials><user>i</user><password>p2</password></interserver_http_credentials>') }]);
+  const dup = run([
+    { path: 'ch1/config.xml', text: node(1, 1, 'ch1') },
+    { path: 'ch2/config.xml', text: node(2, 1, 'ch1') },
+  ]);
+  check(
+    'nodes dup replica',
+    dup.cross.some((f) => f.code === 'node-dup-replica'),
+  );
+  const wrongShard = run([
+    { path: 'ch1/config.xml', text: node(1, 1, 'ch1') },
+    { path: 'ch3/config.xml', text: node(3, 1, 'ch3') },
+  ]);
+  check(
+    'nodes shard mismatch',
+    wrongShard.cross.some((f) => f.code === 'node-shard-mismatch' && f.file === 'ch3/config.xml'),
+  );
+  const zk = run([
+    { path: 'ch1/config.xml', text: node(1, 1, 'ch1') },
+    { path: 'ch2/config.xml', text: node(2, 1, 'ch2').replace('k1', 'k9') },
+  ]);
+  check(
+    'nodes zookeeper differs',
+    zk.cross.some((f) => f.code === 'node-zk-diff'),
+  );
+  const fr = run([
+    { path: 'ch1/config.xml', text: node(1, 1, 'ch1') },
+    { path: 'ch2/config.xml', text: node(2, 1, 'ch2').replace(/<macros>.*<\/macros>/, '') },
+    {
+      path: 'ch2/config.d/macros.xml',
+      text: '<clickhouse><macros><shard>1</shard><replica>ch1</replica></macros></clickhouse>',
+    },
+  ]);
+  check(
+    'nodes merged with config.d',
+    fr.cross.some((f) => f.code === 'node-dup-replica'),
+    fr.cross.map((f) => f.code).join(),
+  );
+  {
+    const d = fr.cross.find((f) => f.code === 'node-dup-replica');
+    check(
+      'dup replica links the other node',
+      d.related?.[0]?.file === 'ch1/config.xml' && d.msg.includes(d.related[0].text),
+      JSON.stringify(d.related),
+    );
+  }
+  const pw = run([
+    {
+      path: 'a/config.xml',
+      text: node(
+        1,
+        1,
+        'ch1',
+        '<interserver_http_credentials><user>i</user><password>p1</password></interserver_http_credentials>',
+      ),
+    },
+    {
+      path: 'b/config.xml',
+      text: node(
+        2,
+        1,
+        'ch2',
+        '<interserver_http_credentials><user>i</user><password>p2</password></interserver_http_credentials>',
+      ),
+    },
+  ]);
   const pf = pw.cross.find((f) => f.code === 'node-interserver-password');
   check('nodes interserver password differs, not shown', pf && !/p1|p2/.test(pf.msg));
-  const users = run([{ path: 'config.xml', text: '<clickhouse><tcp_port>9000</tcp_port><default_profile>web</default_profile><remote_servers><c><shard><replica><host>h</host><user>app</user></replica></shard></c></remote_servers></clickhouse>' },
-    { path: 'users.xml', text: '<clickhouse><profiles><default/></profiles><users><default><password/></default></users></clickhouse>' }]);
-  check('cross default_profile', users.findings.some((f) => f.code === 'ref-profile'), users.findings.map((f) => f.code).join());
-  check('cross cluster user', users.findings.some((f) => f.code === 'ref-cluster-user'));
-  const ov = run([{ path: 'config.xml', text: '<clickhouse><tcp_port>9000</tcp_port><http_port>9181</http_port></clickhouse>' }, { path: 'keeper_config.xml', text: '<clickhouse><keeper_server><tcp_port>9181</tcp_port><server_id>1</server_id><raft_configuration><server><id>1</id><hostname>a</hostname><port>9234</port></server></raft_configuration></keeper_server></clickhouse>' }]);
-  check('server/keeper port overlap', ov.cross.some((f) => f.code === 'node-port-overlap'), ov.cross.map((f) => f.code).join());
+  const users = run([
+    {
+      path: 'config.xml',
+      text: '<clickhouse><tcp_port>9000</tcp_port><default_profile>web</default_profile><remote_servers><c><shard><replica><host>h</host><user>app</user></replica></shard></c></remote_servers></clickhouse>',
+    },
+    {
+      path: 'users.xml',
+      text: '<clickhouse><profiles><default/></profiles><users><default><password/></default></users></clickhouse>',
+    },
+  ]);
+  check(
+    'cross default_profile',
+    users.findings.some((f) => f.code === 'ref-profile'),
+    users.findings.map((f) => f.code).join(),
+  );
+  check(
+    'cross cluster user',
+    users.findings.some((f) => f.code === 'ref-cluster-user'),
+  );
+  const ov = run([
+    { path: 'config.xml', text: '<clickhouse><tcp_port>9000</tcp_port><http_port>9181</http_port></clickhouse>' },
+    {
+      path: 'keeper_config.xml',
+      text: '<clickhouse><keeper_server><tcp_port>9181</tcp_port><server_id>1</server_id><raft_configuration><server><id>1</id><hostname>a</hostname><port>9234</port></server></raft_configuration></keeper_server></clickhouse>',
+    },
+  ]);
+  check(
+    'server/keeper port overlap',
+    ov.cross.some((f) => f.code === 'node-port-overlap'),
+    ov.cross.map((f) => f.code).join(),
+  );
 }
 
 // Upgrade report.
 {
   const { upgradeReport, upgradeMarkdown, inRange } = await import('../js/upgrade.js');
-  check('inRange', inRange('25.3', '24.8', '25.8') && !inRange('24.8', '24.8', '25.8') && inRange('25.8', '24.8', '25.8') && !inRange('next', '24.8', '26.9') && inRange('next', '24.8', 'latest'));
-  const r = upgradeReport([{ path: 'config.xml', text: '<clickhouse><tcp_port>9000</tcp_port><foo>1</foo><async_load_databases>false</async_load_databases></clickhouse>' }], { schema, from: '25.3', to: '26.9' });
-  check('upgrade: strict check is new', r.added.some((f) => f.sev === 'error' && /Since 26\.8/.test(f.msg)), JSON.stringify(r.added.map((f) => f.code)));
-  check('upgrade: unset defaults listed', r.unset.server?.some((x) => x.name === 'concurrent_threads_scheduler'));
+  check(
+    'inRange',
+    inRange('25.3', '24.8', '25.8') &&
+      !inRange('24.8', '24.8', '25.8') &&
+      inRange('25.8', '24.8', '25.8') &&
+      !inRange('next', '24.8', '26.9') &&
+      inRange('next', '24.8', 'latest'),
+  );
+  const r = upgradeReport(
+    [
+      {
+        path: 'config.xml',
+        text: '<clickhouse><tcp_port>9000</tcp_port><foo>1</foo><async_load_databases>false</async_load_databases></clickhouse>',
+      },
+    ],
+    { schema, from: '25.3', to: '26.9' },
+  );
+  check(
+    'upgrade: strict check is new',
+    r.added.some((f) => f.sev === 'error' && /Since 26\.8/.test(f.msg)),
+    JSON.stringify(r.added.map((f) => f.code)),
+  );
+  check(
+    'upgrade: unset defaults listed',
+    r.unset.server?.some((x) => x.name === 'concurrent_threads_scheduler'),
+  );
   check('upgrade: set setting not in unset', !r.unset.server?.some((x) => x.name === 'async_load_databases'));
-  const back = upgradeReport([{ path: 'config.xml', text: '<clickhouse><query_condition_cache_size>1</query_condition_cache_size></clickhouse>' }], { schema, from: '24.8', to: '26.9' });
-  check('upgrade: too-new resolved', back.resolved.some((f) => f.code === 'version-too-new'));
+  const back = upgradeReport(
+    [
+      {
+        path: 'config.xml',
+        text: '<clickhouse><query_condition_cache_size>1</query_condition_cache_size></clickhouse>',
+      },
+    ],
+    { schema, from: '24.8', to: '26.9' },
+  );
+  check(
+    'upgrade: too-new resolved',
+    back.resolved.some((f) => f.code === 'version-too-new'),
+  );
   check('upgrade markdown', upgradeMarkdown(r).includes('# Upgrade report: 25.3 → 26.9'));
   const k = upgradeReport([{ path: 'k.xml', text: fx('keeper_config.xml') }], { schema, from: '24.8', to: '26.9' });
   check('upgrade keeper groups', Object.keys(k.unset).join() === 'coordination', Object.keys(k.unset).join());

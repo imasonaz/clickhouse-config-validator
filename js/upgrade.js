@@ -16,14 +16,21 @@ const findingKey = (f) => `${f.file || ''}|${f.code}|${f.line}|${f.path || ''}`;
 
 function defFor(schema, scope, name) {
   if (scope === 'server') return { def: schema.server[name] || schema.serverWithPath[name], group: 'server' };
-  if (scope === 'coordination') return { def: schema.coordination[name.replace(/^coordination_settings\./, '')], group: 'coordination' };
+  if (scope === 'coordination')
+    return { def: schema.coordination[name.replace(/^coordination_settings\./, '')], group: 'coordination' };
   if (scope.startsWith('profile ')) return { def: schema.session[name], group: 'session' };
-  if (scope === 'merge_tree' || scope === 'replicated_merge_tree') return { def: schema.mergeTree[name], group: 'mergeTree' };
+  if (scope === 'merge_tree' || scope === 'replicated_merge_tree')
+    return { def: schema.mergeTree[name], group: 'mergeTree' };
   return { def: null };
 }
 
 const GROUPS_FOR_MODE = { server: ['server', 'mergeTree', 'session'], users: ['session'], keeper: ['coordination'] };
-export const GROUP_LABEL = { server: 'Server settings', mergeTree: 'MergeTree settings', session: 'Session settings (profiles)', coordination: 'Keeper coordination settings' };
+export const GROUP_LABEL = {
+  server: 'Server settings',
+  mergeTree: 'MergeTree settings',
+  session: 'Session settings (profiles)',
+  coordination: 'Keeper coordination settings',
+};
 
 /**
  * files: [{ path, text, format? }]. Returns { from, to, mode, added, resolved, set, unset } where added/resolved are
@@ -39,14 +46,17 @@ export function upgradeReport(files, { schema, from, to, mode = 'auto', mainPath
     }
     return analyzeSet(files, { schema, mode, mainPath, substitutions, version });
   };
-  const a = runAt(from), b = runAt(to);
-  if (a.parseError || b.parseError || (!a.doc && !a.merged)) return { from, to, error: 'Fix the syntax error first; the upgrade report needs a parseable config.' };
+  const a = runAt(from),
+    b = runAt(to);
+  if (a.parseError || b.parseError || (!a.doc && !a.merged))
+    return { from, to, error: 'Fix the syntax error first; the upgrade report needs a parseable config.' };
   const before = new Map(a.findings.map((f) => [findingKey(f), f]));
   const after = new Map(b.findings.map((f) => [findingKey(f), f]));
   // A finding present at both versions but with a different severity (e.g. an ignored key that becomes fatal)
   // counts as new when it got worse and as resolved when it got milder; `was` keeps the old severity.
   const rank = { error: 0, warning: 1, info: 2 };
-  const added = [], resolved = [];
+  const added = [],
+    resolved = [];
   for (const f of b.findings) {
     const o = before.get(findingKey(f));
     if (!o) added.push(f);
@@ -65,9 +75,19 @@ export function upgradeReport(files, { schema, from, to, mode = 'auto', mainPath
     if (!def) continue;
     setNames[group].add(group === 'coordination' ? r.name.replace(/^coordination_settings\./, '') : r.name);
     const changes = defaultChanges(def).filter((c) => inRange(c.version, from, to));
-    const t0 = tierAt(def, from), t1 = tierAt(def, to);
+    const t0 = tierAt(def, from),
+      t1 = tierAt(def, to);
     if (!changes.length && t0 === t1) continue;
-    set.push({ scope: r.scope, name: r.name, value: r.value, file: r.file, line: r.line, url: r.url, changes: changes.reverse(), tier: t0 !== t1 ? { from: t0 || 'production', to: t1 || 'production' } : null });
+    set.push({
+      scope: r.scope,
+      name: r.name,
+      value: r.value,
+      file: r.file,
+      line: r.line,
+      url: r.url,
+      changes: changes.reverse(),
+      tier: t0 !== t1 ? { from: t0 || 'production', to: t1 || 'production' } : null,
+    });
   }
 
   const unset = {};
@@ -86,21 +106,49 @@ export function upgradeReport(files, { schema, from, to, mode = 'auto', mainPath
 
 /** Markdown rendering for download. */
 export function upgradeMarkdown(r, { source = '' } = {}) {
-  const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  const cell = (s) =>
+    String(s ?? '')
+      .replace(/\|/g, '\\|')
+      .replace(/\n/g, ' ');
   const loc = (f) => `${f.file ? `${f.file}:` : ''}${f.line}`;
   const chg = (cs) => cs.map((c) => `${c.version}: ${c.from} → ${c.to}`).join('; ');
   const out = [`# Upgrade report: ${r.from} → ${r.to}`, '', source ? `${source}` : '', ''];
   out.push(`## New findings at ${r.to} (${r.added.length})`, '');
-  if (r.added.length) out.push('| Severity | Location | Finding |', '|---|---|---|', ...r.added.map((f) => `| ${f.sev}${f.was ? ` (was ${f.was})` : ''} | \`${cell(loc(f))}\` | ${cell(f.msg)} |`));
+  if (r.added.length)
+    out.push(
+      '| Severity | Location | Finding |',
+      '|---|---|---|',
+      ...r.added.map((f) => `| ${f.sev}${f.was ? ` (was ${f.was})` : ''} | \`${cell(loc(f))}\` | ${cell(f.msg)} |`),
+    );
   else out.push('None.');
   out.push('', `## Resolved by ${r.to} (${r.resolved.length})`, '');
-  if (r.resolved.length) out.push('| Severity | Location | Finding |', '|---|---|---|', ...r.resolved.map((f) => `| ${f.sev}${f.was ? ` (was ${f.was})` : ''} | \`${cell(loc(f))}\` | ${cell(f.msg)} |`));
+  if (r.resolved.length)
+    out.push(
+      '| Severity | Location | Finding |',
+      '|---|---|---|',
+      ...r.resolved.map((f) => `| ${f.sev}${f.was ? ` (was ${f.was})` : ''} | \`${cell(loc(f))}\` | ${cell(f.msg)} |`),
+    );
   else out.push('None.');
   out.push('', `## Settings this config sets that changed (${r.set.length})`, '');
-  if (r.set.length) out.push('| Setting | Your value | Default changes | Tier |', '|---|---|---|---|', ...r.set.map((s) => `| \`${cell(s.name)}\` (${cell(s.scope)}) | \`${cell(s.value)}\` | ${cell(chg(s.changes))} | ${s.tier ? `${s.tier.from} → ${s.tier.to}` : ''} |`));
+  if (r.set.length)
+    out.push(
+      '| Setting | Your value | Default changes | Tier |',
+      '|---|---|---|---|',
+      ...r.set.map(
+        (s) =>
+          `| \`${cell(s.name)}\` (${cell(s.scope)}) | \`${cell(s.value)}\` | ${cell(chg(s.changes))} | ${s.tier ? `${s.tier.from} → ${s.tier.to}` : ''} |`,
+      ),
+    );
   else out.push('None.');
   for (const [g, rows] of Object.entries(r.unset)) {
-    out.push('', `## ${GROUP_LABEL[g]} left at default whose default changed (${rows.length})`, '', '| Setting | Default changes |', '|---|---|', ...rows.map((x) => `| \`${cell(x.name)}\` | ${cell(chg(x.changes))} |`));
+    out.push(
+      '',
+      `## ${GROUP_LABEL[g]} left at default whose default changed (${rows.length})`,
+      '',
+      '| Setting | Default changes |',
+      '|---|---|',
+      ...rows.map((x) => `| \`${cell(x.name)}\` | ${cell(chg(x.changes))} |`),
+    );
   }
   return out.join('\n') + '\n';
 }

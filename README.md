@@ -35,9 +35,12 @@ Limitations: substitutions without a value you supply are reported and left unre
 
 ## Run locally
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the code map, how checks are written, and the lint/format setup.
+
 ```sh
 python3 -m http.server 8000   # then open http://localhost:8000
 node test/run.mjs             # regression tests (Node 18+)
+npm install && npm run check  # lint (ESLint, Prettier) + tests
 ```
 
 ## Command line and CI

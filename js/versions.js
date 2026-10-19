@@ -2,7 +2,8 @@
 // h = [[version, previous_default, new_default, reason], ...], newest first.
 
 export const cmpVer = (a, b) => {
-  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  const pa = String(a).split('.').map(Number),
+    pb = String(b).split('.').map(Number);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const d = (pa[i] || 0) - (pb[i] || 0);
     if (d) return d;
@@ -27,8 +28,30 @@ export function obsoleteSince(def) {
   return r ? { version: r[0], reason: r[3] } : null;
 }
 
+/** True when something that first shipped in `since` is missing from the target release. */
+export function tooNew(since, version) {
+  return !!since && !!version && version !== 'latest' && (since === 'next' || cmpVer(since, version) > 0);
+}
+
+/** Value of a per-release series ([[release, value], ...] oldest first) at a release. */
+function atRelease(series, version) {
+  let v = series[0][1];
+  for (const [ver, x] of series) if (cmpVer(ver, version) <= 0) v = x;
+  return v;
+}
+
+/** Feature tier at a given version (from the per-release index when the tier changed). */
+export function tierAt(def, version) {
+  if (!version || version === 'latest' || !def.th) return def.tier || null;
+  return atRelease(def.th, version);
+}
+
 /** Default value at a given version ('latest' = the generated schema's default). */
 export function defaultAt(def, version) {
+  if (def.dh && version && version !== 'latest') {
+    const v = atRelease(def.dh, version);
+    return v === def.dh[def.dh.length - 1][1] ? def.d : v;
+  }
   if (!version || version === 'latest' || !def.h || !def.h.length) return def.d;
   let v = null;
   for (let i = def.h.length - 1; i >= 0; i--) {
@@ -42,7 +65,14 @@ export function defaultAt(def, version) {
 
 /** Default changes (not "new setting" records), newest first: [{ version, from, to, reason }]. */
 export function defaultChanges(def) {
-  return (def.h || []).filter((r) => r[1] !== r[2] && !/\bnew setting\b/i.test(r[3])).map(([version, from, to, reason]) => ({ version, from, to, reason }));
+  if (def.dh)
+    return def.dh
+      .slice(1)
+      .map(([version, to], i) => ({ version, from: def.dh[i][1], to, reason: '' }))
+      .reverse();
+  return (def.h || [])
+    .filter((r) => r[1] !== r[2] && !/\bnew setting\b/i.test(r[3]))
+    .map(([version, from, to, reason]) => ({ version, from, to, reason }));
 }
 
 /** [first, last] release of a setting that is no longer declared, or null. first = null: in the oldest indexed release. */
@@ -54,6 +84,7 @@ export function removedRange(schema, scope, name) {
 export function knownVersions(schema) {
   if (schema.releases) return [...schema.releases].reverse();
   const s = new Set();
-  for (const group of [schema.session, schema.mergeTree]) for (const d of Object.values(group)) for (const r of d.h || []) if (/^\d+\.\d+$/.test(r[0])) s.add(r[0]);
+  for (const group of [schema.session, schema.mergeTree])
+    for (const d of Object.values(group)) for (const r of d.h || []) if (/^\d+\.\d+$/.test(r[0])) s.add(r[0]);
   return [...s].sort((a, b) => cmpVer(b, a));
 }

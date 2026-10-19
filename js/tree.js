@@ -3,13 +3,18 @@
 
 import * as YAML from '../vendor/yaml.min.mjs';
 
+/**
+ * A config tree node, shared by the XML and YAML parsers.
+ * attrs: name -> { value, line, col }; text: leaf text, raw and untrimmed (null when the node has children);
+ * line/col: where the element starts; textLine: where its text starts; file: set by tagFile for multi-file sets.
+ */
 export function makeNode(name, line, col) {
   return {
     name,
-    attrs: new Map(),     // name -> { value, line, col }
+    attrs: new Map(), // name -> { value, line, col }
     children: [],
     comments: [],
-    text: null,           // leaf text (raw, untrimmed) or null when the node has children
+    text: null, // leaf text (raw, untrimmed) or null when the node has children
     textLine: line,
     line,
     col,
@@ -18,24 +23,29 @@ export function makeNode(name, line, col) {
   };
 }
 
+/** Element names from just below the root down to `node`. */
 export function pathOf(node) {
   const parts = [];
   for (let n = node; n && n.parent; n = n.parent) parts.unshift(n.name);
   return parts;
 }
 
+/** All direct children with this element name. */
 export function childrenNamed(node, name) {
   return node.children.filter((c) => c.name === name);
 }
 
+/** First direct child with this element name, or null (what Poco reads for a single-valued key). */
 export function child(node, name) {
   return node.children.find((c) => c.name === name) || null;
 }
 
+/** Trimmed leaf text, or null for a missing node or one with children. */
 export function textOf(node) {
   return node && node.text != null ? node.text.trim() : null;
 }
 
+/** Depth-first, pre-order visit of `node` and its descendants: fn(node, depth). */
 export function walk(node, fn, depth = 0) {
   fn(node, depth);
   for (const c of node.children) walk(c, fn, depth + 1);
@@ -67,7 +77,13 @@ export class YamlError extends Error {
  */
 export function parseYaml(src) {
   const lineCounter = new YAML.LineCounter();
-  const ydoc = YAML.parseDocument(src, { lineCounter, uniqueKeys: false, prettyErrors: false, keepSourceTokens: true, merge: false });
+  const ydoc = YAML.parseDocument(src, {
+    lineCounter,
+    uniqueKeys: false,
+    prettyErrors: false,
+    keepSourceTokens: true,
+    merge: false,
+  });
   const pos = (range) => {
     if (!range) return { line: 1, col: 1 };
     const p = lineCounter.linePos(range[0]);
@@ -78,7 +94,10 @@ export function parseYaml(src) {
     const p = e.linePos ? e.linePos[0] : pos(e.pos);
     throw new YamlError(e.message.split('\n')[0], p.line, p.col);
   }
-  const warnings = ydoc.warnings.map((w) => ({ message: w.message.split('\n')[0], ...(w.linePos ? w.linePos[0] : pos(w.pos)) }));
+  const warnings = ydoc.warnings.map((w) => ({
+    message: w.message.split('\n')[0],
+    ...(w.linePos ? w.linePos[0] : pos(w.pos)),
+  }));
   const meta = { duplicateKeys: [], mergeKeys: [], nonStringKeys: [], explicitClickhouseRoot: null };
 
   const root = makeNode('clickhouse', 1, 1);
@@ -130,14 +149,20 @@ export function parseYaml(src) {
         const key = keyNode == null ? '' : String(keyNode.value ?? '');
         if (key === '<<') meta.mergeKeys.push({ line: kp.line, col: kp.col, path: pathOf(el) });
         const vn = resolve(pair.value);
-        if (seen.has(key)) meta.duplicateKeys.push({ key, line: kp.line, col: kp.col, first: seen.get(key), path: pathOf(el) });
+        if (seen.has(key))
+          meta.duplicateKeys.push({ key, line: kp.line, col: kp.col, first: seen.get(key), path: pathOf(el) });
         else seen.set(key, kp.line);
         if (key.startsWith('@') && (vn == null || YAML.isScalar(vn))) {
           el.attrs.set(key.slice(1), { value: vn == null ? '' : (scalarText(vn) ?? ''), line: kp.line, col: kp.col });
           continue;
         }
         if (key === '#text' && (vn == null || YAML.isScalar(vn))) {
-          if (el.text != null) throw new YamlError("Node has several text nodes ('#text' combined with a scalar value); YAMLParser rejects this", kp.line, kp.col);
+          if (el.text != null)
+            throw new YamlError(
+              "Node has several text nodes ('#text' combined with a scalar value); YAMLParser rejects this",
+              kp.line,
+              kp.col,
+            );
           el.text = vn == null ? '' : (scalarText(vn) ?? '');
           el.textLine = kp.line;
           continue;

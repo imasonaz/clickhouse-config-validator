@@ -1,0 +1,10 @@
+# Python tools (tools/*.py): `ruff check tools && ruff format tools`.
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "I", "SIM"]
+ignore = ["E501", "SIM108"]
+
+[format]
+quote-style = "single"

@@ -4,7 +4,8 @@
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const span = (cls, s) => (s ? `<span class="hl-${cls}">${esc(s)}</span>` : '');
 
-const XML_TOKEN = /(<!--[\s\S]*?(?:-->|$))|(<!\[CDATA\[[\s\S]*?(?:\]\]>|$))|(<[?!][\s\S]*?(?:>|$))|(<\/?)([\w:.-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)(\/?>)?|([^<]+)|(<)/g;
+const XML_TOKEN =
+  /(<!--[\s\S]*?(?:-->|$))|(<!\[CDATA\[[\s\S]*?(?:\]\]>|$))|(<[?!][\s\S]*?(?:>|$))|(<\/?)([\w:.-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)(\/?>)?|([^<]+)|(<)/g;
 const XML_ATTR = /([\w:.@-]+)(\s*=\s*)("[^"]*"?|'[^']*'?)|([^"'\w]+|[\s\S])/g;
 const SUBST_ATTRS = new Set(['incl', 'from_env', 'from_zk', 'replace', 'remove', 'optional']);
 
@@ -22,7 +23,8 @@ function xml(text) {
         out += a[1] ? span(SUBST_ATTRS.has(a[1]) ? 'kw' : 'attr', a[1]) + esc(a[2]) + span('str', a[3]) : esc(a[0]);
       }
       out += span('punc', m[7] || '');
-    } else if (m[8]) out += /^\s*-?\d+(\.\d+)?\s*$/.test(m[8]) || /^\s*(true|false)\s*$/.test(m[8]) ? span('num', m[8]) : esc(m[8]);
+    } else if (m[8])
+      out += /^\s*-?\d+(\.\d+)?\s*$/.test(m[8]) || /^\s*(true|false)\s*$/.test(m[8]) ? span('num', m[8]) : esc(m[8]);
     else out += esc(m[0]);
   }
   return out;
@@ -34,7 +36,11 @@ function yamlValue(v) {
   const [, pre, body, post] = m;
   let cls = null;
   if (/^(["']).*\1$/.test(body)) cls = 'str';
-  else if (/^[-+]?(\d[\d_]*(\.\d*)?([eE][-+]?\d+)?|0x[\da-fA-F]+|\.inf|\.nan)$/.test(body) || /^(true|false|null|~|yes|no|on|off)$/i.test(body)) cls = 'num';
+  else if (
+    /^[-+]?(\d[\d_]*(\.\d*)?([eE][-+]?\d+)?|0x[\da-fA-F]+|\.inf|\.nan)$/.test(body) ||
+    /^(true|false|null|~|yes|no|on|off)$/i.test(body)
+  )
+    cls = 'num';
   else if (/^[&*!][^\s]*$/.test(body)) cls = 'meta';
   else if (/^[|>][-+]?\d*$/.test(body)) cls = 'punc';
   return esc(pre) + (cls ? span(cls, body) : esc(body)) + esc(post);
@@ -45,8 +51,14 @@ function splitComment(line) {
   let q = null;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (q) { if (c === q) q = null; continue; }
-    if (c === '"' || c === "'") { if (i === 0 || /[\s:[{,-]/.test(line[i - 1])) q = c; continue; }
+    if (q) {
+      if (c === q) q = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      if (i === 0 || /[\s:[{,-]/.test(line[i - 1])) q = c;
+      continue;
+    }
     if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return [line.slice(0, i), line.slice(i)];
   }
   return [line, ''];
@@ -54,29 +66,33 @@ function splitComment(line) {
 
 function yaml(text) {
   let block = -1; // indentation of an open block scalar (| or >); its lines are plain text
-  return text.split('\n').map((line) => {
-    const indent = /^\s*/.exec(line)[0].length;
-    if (block >= 0) {
-      if (line.trim() === '' || indent > block) return esc(line);
-      block = -1;
-    }
-    if (/^(---|\.\.\.)\s*$/.test(line) || /^%/.test(line)) return span('meta', line);
-    const [code, comment] = splitComment(line);
-    let out = '';
-    let rest = code;
-    const dash = /^(\s*)((?:- +)*)/.exec(rest);
-    out += esc(dash[1]) + span('punc', dash[2]);
-    rest = rest.slice(dash[0].length);
-    const key = /^("[^"]*"|'[^']*'|[^\s#'"[{][^#]*?)(\s*)(:)(?=\s|$)/.exec(rest);
-    if (key) {
-      out += span(key[1].startsWith('@') ? 'attr' : 'key', key[1]) + esc(key[2]) + span('punc', key[3]);
-      rest = rest.slice(key[0].length);
-      if (/^\s*[|>][-+]?\d*\s*$/.test(rest)) block = indent + dash[2].length;
-    } else if (/^\s*[|>][-+]?\d*\s*$/.test(rest)) block = indent;
-    return out + yamlValue(rest) + span('com', comment);
-  }).join('\n');
+  return text
+    .split('\n')
+    .map((line) => {
+      const indent = /^\s*/.exec(line)[0].length;
+      if (block >= 0) {
+        if (line.trim() === '' || indent > block) return esc(line);
+        block = -1;
+      }
+      if (/^(---|\.\.\.)\s*$/.test(line) || /^%/.test(line)) return span('meta', line);
+      const [code, comment] = splitComment(line);
+      let out = '';
+      let rest = code;
+      const dash = /^(\s*)((?:- +)*)/.exec(rest);
+      out += esc(dash[1]) + span('punc', dash[2]);
+      rest = rest.slice(dash[0].length);
+      const key = /^("[^"]*"|'[^']*'|[^\s#'"[{][^#]*?)(\s*)(:)(?=\s|$)/.exec(rest);
+      if (key) {
+        out += span(key[1].startsWith('@') ? 'attr' : 'key', key[1]) + esc(key[2]) + span('punc', key[3]);
+        rest = rest.slice(key[0].length);
+        if (/^\s*[|>][-+]?\d*\s*$/.test(rest)) block = indent + dash[2].length;
+      } else if (/^\s*[|>][-+]?\d*\s*$/.test(rest)) block = indent;
+      return out + yamlValue(rest) + span('com', comment);
+    })
+    .join('\n');
 }
 
+/** HTML with syntax-colouring spans for `text`; removing the tags gives back exactly `text`. */
 export function highlight(text, format) {
   return format === 'yaml' ? yaml(text) : xml(text);
 }

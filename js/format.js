@@ -5,6 +5,7 @@
 const escText = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escAttr = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 
+/** Serialise a parsed document back to XML, re-indented, keeping comments and the prolog. */
 export function toXml(doc, { indent = 4 } = {}) {
   const pad = (d) => ' '.repeat(d * indent);
   const out = [];
@@ -22,7 +23,12 @@ export function toXml(doc, { indent = 4 } = {}) {
     // Re-indent multi-line comments relative to their minimal indentation.
     const body = lines.slice(1);
     const min = Math.min(...body.filter((l) => l.trim()).map((l) => l.match(/^\s*/)[0].length), Infinity);
-    return [`${pad(d)}<!--${lines[0]}`, ...body.map((l) => (l.trim() ? pad(d) + l.slice(Number.isFinite(min) ? min : 0) : ''))].join('\n') + '-->';
+    return (
+      [
+        `${pad(d)}<!--${lines[0]}`,
+        ...body.map((l) => (l.trim() ? pad(d) + l.slice(Number.isFinite(min) ? min : 0) : '')),
+      ].join('\n') + '-->'
+    );
   }
 
   function emit(n, d) {
@@ -30,7 +36,10 @@ export function toXml(doc, { indent = 4 } = {}) {
     const comments = n.comments || [];
     if (!n.children.length) {
       const t = n.text == null ? '' : n.text.trim();
-      if (!t && !comments.length) { out.push(`${pad(d)}<${n.name}${attrs}/>`); return; }
+      if (!t && !comments.length) {
+        out.push(`${pad(d)}<${n.name}${attrs}/>`);
+        return;
+      }
       if (!comments.length) {
         const body = n.hasCdata ? `<![CDATA[${t}]]>` : escText(t);
         out.push(`${pad(d)}<${n.name}${attrs}>${body}</${n.name}>`);
@@ -52,22 +61,24 @@ export function toXml(doc, { indent = 4 } = {}) {
   }
 }
 
-const PLAIN_SCALAR = /^[^\s\-?:,\[\]{}#&*!|>'"%@`][^\n]*$/;
+const PLAIN_SCALAR = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/;
 function yScalar(s) {
   if (s === '') return '""';
   if (PLAIN_SCALAR.test(s) && !/:\s|\s#|:$|\s$/.test(s) && !/^(-|\?|:)(\s|$)/.test(s)) return s;
   return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t') + '"';
 }
 function yKey(k) {
-  return /^[A-Za-z_][A-Za-z0-9_.\-]*$/.test(k) ? k : yScalar(k).startsWith('"') ? yScalar(k) : `"${k}"`;
+  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(k) ? k : yScalar(k).startsWith('"') ? yScalar(k) : `"${k}"`;
 }
 
+/** Convert a config tree to YAML following the rules of ClickHouse's YAMLParser in reverse (repeated elements become sequences, attributes "@name" keys). */
 export function toYaml(root, { indent = 2, comments = true } = {}) {
   const pad = (d) => ' '.repeat(d * indent);
   const lines = [];
   const commentLines = (cms, d) => {
     if (!comments) return;
-    for (const c of cms) for (const l of c.text.trim().split('\n')) lines.push(`${pad(d)}#${l.trim() ? ' ' + l.trim() : ''}`);
+    for (const c of cms)
+      for (const l of c.text.trim().split('\n')) lines.push(`${pad(d)}#${l.trim() ? ' ' + l.trim() : ''}`);
   };
   emitBody(root, 0);
   return lines.join('\n') + '\n';
@@ -75,7 +86,8 @@ export function toYaml(root, { indent = 2, comments = true } = {}) {
   // Emit the attributes, text and children of `n` as mapping entries at depth d.
   function emitBody(n, d) {
     for (const [k, v] of n.attrs) lines.push(`${pad(d)}"@${k}": ${yScalar(v.value)}`);
-    if (n.attrs.size && n.text != null && n.text.trim() !== '') lines.push(`${pad(d)}"#text": ${yScalar(n.text.trim())}`);
+    if (n.attrs.size && n.text != null && n.text.trim() !== '')
+      lines.push(`${pad(d)}"#text": ${yScalar(n.text.trim())}`);
     const groups = new Map();
     n.children.forEach((c, i) => {
       if (!groups.has(c.name)) groups.set(c.name, { items: [], firstIndex: i });
@@ -83,17 +95,25 @@ export function toYaml(root, { indent = 2, comments = true } = {}) {
     });
     const cms = n.comments || [];
     for (const [name, g] of groups) {
-      commentLines(cms.filter((c) => g.items.some((it) => n.children.indexOf(it) === c.index)), d);
+      commentLines(
+        cms.filter((c) => g.items.some((it) => n.children.indexOf(it) === c.index)),
+        d,
+      );
       if (g.items.length === 1) emitEntry(name, g.items[0], d);
       else {
         lines.push(`${pad(d)}${yKey(name)}:`);
         for (const it of g.items) emitSeqItem(it, d + 1);
       }
     }
-    commentLines(cms.filter((c) => c.index >= n.children.length), d);
+    commentLines(
+      cms.filter((c) => c.index >= n.children.length),
+      d,
+    );
   }
 
-  function isScalarLeaf(n) { return !n.children.length && !n.attrs.size; }
+  function isScalarLeaf(n) {
+    return !n.children.length && !n.attrs.size;
+  }
 
   function emitEntry(name, n, d) {
     if (isScalarLeaf(n)) {
@@ -113,7 +133,10 @@ export function toYaml(root, { indent = 2, comments = true } = {}) {
     }
     const start = lines.length;
     emitBody(n, d + 1);
-    if (lines.length === start) { lines.push(`${pad(d)}- {}`); return; }
+    if (lines.length === start) {
+      lines.push(`${pad(d)}- {}`);
+      return;
+    }
     // Turn the first emitted line into the "- " item marker.
     const first = start < lines.length ? lines.findIndex((l, i) => i >= start && !l.trimStart().startsWith('#')) : -1;
     if (first >= 0) lines[first] = `${pad(d)}- ${lines[first].slice(pad(d + 1).length)}`;

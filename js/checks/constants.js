@@ -1,0 +1,272 @@
+// Fixed lists the checks share: preprocessor attributes, known keys of sections that have no settings class,
+// port keys, system log tables and the like. Each list names where it comes from in the ClickHouse sources or docs.
+
+// Attributes ClickHouse's ConfigProcessor understands (configuration-files docs + ConfigProcessor.cpp).
+export const PREPROCESSOR_ATTRS = new Set([
+  'replace',
+  'remove',
+  'incl',
+  'from_env',
+  'from_zk',
+  'optional',
+  'merge',
+  'yaml',
+  'encrypted_by',
+  'hide_in_preprocessed',
+]);
+
+export const SUBST_ATTRS = ['incl', 'from_zk', 'from_env'];
+
+// Attributes that specific sections use.
+export const CONTEXT_ATTRS = { node: ['index'] };
+
+export const SYSTEM_LOGS = [
+  'query_log',
+  'query_thread_log',
+  'part_log',
+  'background_schedule_pool_log',
+  'trace_log',
+  'crash_log',
+  'text_log',
+  'metric_log',
+  'transposed_metric_log',
+  'bucketed_metric_log',
+  'error_log',
+  'filesystem_cache_log',
+  'filesystem_read_prefetches_log',
+  's3queue_log',
+  'azure_queue_log',
+  'asynchronous_metric_log',
+  'opentelemetry_span_log',
+  'query_views_log',
+  'zookeeper_log',
+  'session_log',
+  'transactions_info_log',
+  'processors_profile_log',
+  'asynchronous_insert_log',
+  'backup_log',
+  'blob_storage_log',
+  'query_metric_log',
+  'dead_letter_queue',
+  'zookeeper_connection_log',
+  'aggregated_zookeeper_log',
+  'iceberg_metadata_log',
+  'delta_lake_metadata_log',
+  'predicate_statistics_log',
+];
+
+export const SYSTEM_LOG_KEYS = [
+  'database',
+  'table',
+  'engine',
+  'partition_by',
+  'order_by',
+  'ttl',
+  'storage_policy',
+  'settings',
+  'flush_interval_milliseconds',
+  'max_size_rows',
+  'reserved_size_rows',
+  'buffer_size_rows_flush_threshold',
+  'flush_on_crash',
+  'collect_interval_milliseconds',
+  'symbolize',
+  'schema_type',
+  'enable_user_query_log',
+  'level',
+  'cluster',
+];
+
+export const SYSTEM_LOG_TYPES = {
+  flush_interval_milliseconds: 'UInt64',
+  max_size_rows: 'UInt64',
+  reserved_size_rows: 'UInt64',
+  buffer_size_rows_flush_threshold: 'UInt64',
+  collect_interval_milliseconds: 'UInt64',
+};
+
+export const LOGGER_LEVELS = [
+  'none',
+  'fatal',
+  'critical',
+  'error',
+  'warning',
+  'notice',
+  'information',
+  'debug',
+  'trace',
+  'test',
+];
+
+// keeper_server keys (Keeper docs table + keys read in src/Coordination/*). parser: how the value is read.
+export const KEEPER_KEYS = {
+  tcp_port: { t: 'Port', p: 'poco' },
+  tcp_port_secure: { t: 'Port', p: 'poco' },
+  server_id: { t: 'Int32', p: 'poco' },
+  log_storage_path: { t: 'String' },
+  snapshot_storage_path: { t: 'String' },
+  storage_path: { t: 'String' },
+  data_storage_path: { t: 'String' },
+  log_storage_disk: { t: 'String' },
+  latest_log_storage_disk: { t: 'String' },
+  snapshot_storage_disk: { t: 'String' },
+  latest_snapshot_storage_disk: { t: 'String' },
+  old_log_storage_disk: { t: 'String' },
+  old_snapshot_storage_disk: { t: 'String' },
+  state_storage_disk: { t: 'String' },
+  enable_reconfiguration: { t: 'Bool', p: 'poco' },
+  max_memory_usage_soft_limit: { t: 'UInt64', p: 'poco' },
+  max_memory_usage_soft_limit_ratio: { t: 'Double' },
+  cgroups_memory_observer_wait_time: { t: 'UInt64', p: 'poco' },
+  digest_enabled: { t: 'Bool', p: 'poco' },
+  digest_enabled_on_commit: { t: 'Bool', p: 'poco' },
+  create_snapshot_on_exit: { t: 'Bool', p: 'poco' },
+  upload_snapshot_on_exit: { t: 'Bool', p: 'poco' },
+  remove_orphaned_nodes_on_startup: { t: 'Bool', p: 'poco' },
+  hostname_checks_enabled: { t: 'Bool', p: 'poco' },
+  four_letter_word_white_list: { t: 'String' },
+  enable_ipv6: { t: 'Bool', p: 'poco' },
+  superdigest: { t: 'String' },
+  force_recovery: { t: 'Bool', p: 'poco' },
+  client_password: { t: 'String' },
+  client_password_sha256_hex: { t: 'String' },
+  client_password_double_sha1_hex: { t: 'String' },
+  cleanup_old_and_ignore_new_acl: { t: 'Bool', p: 'poco' },
+  socket_receive_timeout_sec: { t: 'UInt64' },
+  socket_send_timeout_sec: { t: 'UInt64' },
+  coordination_settings: { section: true },
+  raft_configuration: { section: true },
+  feature_flags: { section: true },
+  http_control: { section: true },
+  precommit_sleep_ms_for_testing: { t: 'UInt64', p: 'poco' },
+  precommit_sleep_probability_for_testing: { t: 'Double' },
+};
+
+export const RAFT_SERVER_KEYS = {
+  id: { t: 'Int32', p: 'poco' },
+  hostname: { t: 'String' },
+  port: { t: 'Port', p: 'poco' },
+  can_become_leader: { t: 'Bool', p: 'poco' },
+  priority: { t: 'Int32', p: 'poco' },
+  start_as_follower: { t: 'Bool', p: 'poco' },
+};
+
+// Root-level port keys a listener binds to; used for duplicate-port and raft-port checks
+// (list taken from getClientPorts() in src/Coordination/KeeperStateManager.cpp plus other listeners).
+export const PORT_PATHS = [
+  'tcp_port',
+  'tcp_port_secure',
+  'http_port',
+  'https_port',
+  'interserver_http_port',
+  'interserver_https_port',
+  'mysql_port',
+  'postgresql_port',
+  'grpc_port',
+  'tcp_with_proxy_port',
+  'tcp_ssh_port',
+  'arrowflight_port',
+  'prometheus.port',
+  'keeper_server.tcp_port',
+  'keeper_server.tcp_port_secure',
+  'keeper_server.http_control.port',
+];
+
+export const RAFT_CONFLICT_PORTS = [
+  'keeper_server.tcp_port',
+  'keeper_server.tcp_port_secure',
+  'interserver_http_port',
+  'interserver_https_port',
+  'tcp_port',
+  'tcp_with_proxy_port',
+  'tcp_port_secure',
+  'mysql_port',
+  'postgresql_port',
+  'grpc_port',
+  'prometheus.port',
+];
+
+export const USER_AUTH_KEYS = [
+  'password',
+  'password_sha256_hex',
+  'password_scram_sha256_hex',
+  'password_double_sha1_hex',
+  'no_password',
+  'ldap',
+  'kerberos',
+  'ssl_certificates',
+  'ssh_keys',
+  'http_authentication',
+];
+
+export const USER_KEYS = [
+  ...USER_AUTH_KEYS,
+  'auth_methods',
+  'networks',
+  'profile',
+  'quota',
+  'access_management',
+  'named_collection_control',
+  'named_collection_admin',
+  'show_named_collections',
+  'show_named_collections_secrets',
+  'grants',
+  'allow_databases',
+  'allow_dictionaries',
+  'databases',
+  'default_database',
+  'time_based_one_time_password',
+  'settings',
+  'roles',
+  'default_roles',
+  'valid_until',
+  'access_storage',
+  'host',
+  'ssh_key',
+];
+
+export const DISK_TYPES = [
+  'local',
+  's3',
+  's3_plain',
+  's3_plain_rewritable',
+  'azure_blob_storage',
+  'azure',
+  'hdfs',
+  'web',
+  'cache',
+  'encrypted',
+  'object_storage',
+  'local_blob_storage',
+  'memory',
+];
+
+export const ZK_LB = [
+  'random',
+  'in_order',
+  'nearest_hostname',
+  'hostname_levenshtein_distance',
+  'first_or_random',
+  'round_robin',
+];
+
+// Server-only keys used to tell a full server config from a standalone Keeper config.
+export const SERVER_ONLY_HINTS = [
+  'path',
+  'tmp_path',
+  'http_port',
+  'tcp_port',
+  'users',
+  'profiles',
+  'remote_servers',
+  'mark_cache_size',
+  'users_config',
+  'user_directories',
+  'merge_tree',
+  'query_log',
+  'macros',
+  'zookeeper',
+  'storage_configuration',
+  'default_profile',
+  'interserver_http_port',
+];

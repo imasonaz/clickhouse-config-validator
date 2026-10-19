@@ -1,0 +1,7 @@
+data/
+vendor/
+node_modules/
+package-lock.json
+test/fixtures/
+test/oracle/
+*.md
