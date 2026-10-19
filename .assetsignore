@@ -1,0 +1,13 @@
+# Files in the repo that are not part of the site (gitignore syntax; read by wrangler deploy).
+.*
+node_modules
+package.json
+package-lock.json
+wrangler.jsonc
+eslint.config.js
+ruff.toml
+action.yml
+*.md
+bin
+test
+tools

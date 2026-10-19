@@ -1,0 +1,10 @@
+// Cloudflare Workers static-assets deploy (`npx wrangler deploy`). Having this file stops wrangler from
+// auto-configuring the project, which it does when it finds a package.json and no config.
+// The site is plain static files; .assetsignore keeps the dev and test files out of the upload.
+{
+  "name": "clickhouse-config-validator",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": ".",
+  },
+}
