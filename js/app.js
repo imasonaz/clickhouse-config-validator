@@ -83,7 +83,7 @@ async function init() {
   if (!restored) loadSample(SAMPLES[0].id);
   else showActive();
 
-  els.source.addEventListener('input', (e) => { activeFile().text = els.source.value; schedule(); if (e.inputType !== 'deleteContentBackward' || !els.ac.hidden) suggestAt(); });
+  els.source.addEventListener('input', (e) => { activeFile().text = els.source.value; activeLine = null; schedule(); if (e.inputType !== 'deleteContentBackward' || !els.ac.hidden) suggestAt(); });
   els.source.addEventListener('mousemove', onHover);
   els.source.addEventListener('mouseleave', () => hideHover(300));
   els.hovercard.addEventListener('mouseenter', () => clearTimeout(hoverTimer));

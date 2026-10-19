@@ -106,7 +106,7 @@ main {
 .band.error { background: var(--err-soft); }
 .band.warning { background: var(--warn-soft); }
 .band.info { background: var(--info-soft); opacity: 0.6; }
-.band.focus { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
+.band.focus { box-shadow: inset 3px 0 0 var(--accent); }
 textarea#source {
   position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: 0; margin: 0;
   padding: 10px 12px; background: transparent; color: var(--fg); caret-color: var(--accent);
