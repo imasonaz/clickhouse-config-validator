@@ -131,10 +131,18 @@ textarea#source {
   position: absolute; z-index: 5; width: min(420px, calc(100% - 24px)); padding: 10px 12px; border-radius: 8px;
   background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0,0,0,.18); font-size: 12.5px; line-height: 1.45;
 }
+.hovercard.passive { pointer-events: none; }
 .hovercard .hc-name { font: 600 13px var(--font-mono); overflow-wrap: anywhere; }
 .hovercard .hc-meta { font: 12px var(--font-mono); color: var(--muted); margin: 2px 0 6px; overflow-wrap: anywhere; }
 .hovercard p { margin: 0 0 6px; display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
 .hovercard .role { margin-left: 6px; vertical-align: 1px; }
+.hc-findings { display: grid; gap: 6px; }
+.hc-findings + .hc-name { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.hc-f { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; }
+.hc-f .sev { font: 700 10.5px var(--font-mono); text-transform: uppercase; letter-spacing: .04em; }
+.hc-f.error .sev { color: var(--err); }
+.hc-f.warning .sev { color: var(--warn); }
+.hc-f.info .sev { color: var(--info); }
 .ac {
   position: absolute; z-index: 6; margin: 0; padding: 4px 0; list-style: none; min-width: 220px; max-width: min(420px, calc(100% - 24px)); max-height: 260px; overflow: auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 28px rgba(0,0,0,.18); font: 12.5px var(--font-mono);

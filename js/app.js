@@ -41,6 +41,18 @@ const store = {
 };
 const save = () => store.set('ccv.files', JSON.stringify(state));
 
+// Unsaved edits: the files as they were loaded (sample, upload, shared link) are the baseline. Anything that
+// differs, including edits restored from an earlier visit, is the user's work and is not dropped silently.
+const snapshot = () => JSON.stringify(state.files.map((f) => [f.path, f.text]));
+let baseline = store.get('ccv.baseline');
+function markClean() { baseline = snapshot(); store.set('ccv.baseline', baseline); }
+const isDirty = () => state.files.some((f) => f.text.trim()) && snapshot() !== baseline;
+function confirmDiscard(what) {
+  if (!isDirty()) return true;
+  const n = state.files.length;
+  return confirm(`You have unsaved edits in ${n > 1 ? `${n} open files` : base(activeFile().path)}. ${what} will replace them.\n\nDownload them first from Format & export if you want to keep them. Discard the edits?`);
+}
+
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // Render `x` and <x> fragments in messages as code.
 const fmtMsg = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/&lt;([A-Za-z_@#][\w.\-:\[\] ]*?\/?)&gt;/g, '<code>&lt;$1&gt;</code>');
@@ -66,10 +78,16 @@ async function init() {
   if (location.hash.startsWith('#s=')) {
     try {
       const shared = await decodeState(location.hash.slice(3));
+      try {
+        const saved = JSON.parse(store.get('ccv.files') || 'null');
+        if (saved && Array.isArray(saved.files)) state.files = saved.files;
+      } catch { /* ignore */ }
+      if (!confirmDiscard('Opening this shared link')) throw Object.assign(new Error(), { kept: true });
       Object.assign(state, { files: shared.files, subst: shared.subst || '', version: shared.version || 'latest', view: shared.view || 'merged', mainPath: shared.mainPath || '', active: Math.min(shared.active || 0, shared.files.length - 1) });
       restored = true;
+      markClean();
       toast('Loaded from a shared link. Edits stay in this browser.');
-    } catch (e) { toast(`Could not read the shared link (${e.message}).`); }
+    } catch (e) { toast(e.kept ? 'Kept your edits; the shared link was not opened.' : `Could not read the shared link (${e.message}).`); }
     history.replaceState(null, '', location.pathname + location.search);
   }
   if (!restored) try {
@@ -88,6 +106,11 @@ async function init() {
   els.source.addEventListener('input', (e) => { activeFile().text = els.source.value; activeLine = null; schedule(); if (!editing && (e.inputType !== 'deleteContentBackward' || !els.ac.hidden)) suggestAt(); });
   els.source.addEventListener('mousemove', onHover);
   els.source.addEventListener('mouseleave', () => hideHover(300));
+  els.gutter.parentElement.addEventListener('mousemove', (e) => {
+    const r = els.gutter.parentElement.getBoundingClientRect();
+    showLineFindings(Math.floor((e.clientY - r.top + els.source.scrollTop - textMetrics().pt) / LH));
+  });
+  els.gutter.parentElement.addEventListener('mouseleave', () => hideHover(300));
   els.hovercard.addEventListener('mouseenter', () => clearTimeout(hoverTimer));
   els.hovercard.addEventListener('mouseleave', () => hideHover(200));
   els.source.addEventListener('blur', () => setTimeout(closeAc, 150));
@@ -98,12 +121,12 @@ async function init() {
   els.share.addEventListener('click', share);
   els.version.addEventListener('change', () => { state.version = els.version.value; run(); });
   els.format.addEventListener('change', () => { activeFile().format = els.format.value; run(); });
-  els.sample.addEventListener('change', () => { if (els.sample.value) loadSample(els.sample.value); els.sample.value = ''; });
+  els.sample.addEventListener('change', () => { if (els.sample.value && confirmDiscard('Loading a sample')) loadSample(els.sample.value); els.sample.value = ''; });
   els.upload.addEventListener('click', () => { addMode = false; els.file.click(); });
   els.uploadDir.addEventListener('click', () => { addMode = false; els.folder.click(); });
   els.file.addEventListener('change', () => { readFiles([...els.file.files].map((f) => ({ f, path: f.name })), addMode); els.file.value = ''; });
   els.folder.addEventListener('change', () => { readFiles([...els.folder.files].map((f) => ({ f, path: f.webkitRelativePath || f.name })), addMode, true); els.folder.value = ''; });
-  els.clear.addEventListener('click', () => { state.files = [{ path: 'config.xml', text: '', format: 'auto' }]; state.active = 0; state.subst = ''; showActive(); els.source.focus(); });
+  els.clear.addEventListener('click', () => { if (!confirmDiscard('Clearing')) return; state.files = [{ path: 'config.xml', text: '', format: 'auto' }]; state.active = 0; state.subst = ''; markClean(); showActive(); els.source.focus(); });
   for (const t of els.tabs) t.addEventListener('click', () => selectTab(t.dataset.tab));
   for (const ev of ['dragenter', 'dragover']) els.editor.addEventListener(ev, (e) => { e.preventDefault(); els.editor.classList.add('drag'); });
   for (const ev of ['dragleave', 'drop']) els.editor.addEventListener(ev, () => els.editor.classList.remove('drag'));
@@ -150,6 +173,8 @@ function readFiles(list, add, stripRoot = false) {
   }
   Promise.all(list.map(({ f, path }) => f.text().then((text) => ({ path, text, format: 'auto' })))).then((files) => {
     files.sort((a, b) => (a.path < b.path ? -1 : 1));
+    if (add && files.some((nf) => { const o = state.files.find((x) => x.path === nf.path); return o && o.text !== nf.text; }) && !confirmDiscard(`Adding ${files.length > 1 ? 'these files' : base(files[0].path)}`)) return;
+    if (!add && !confirmDiscard(`Opening ${files.length > 1 ? `${files.length} files` : base(files[0].path)}`)) return;
     if (add) {
       for (const nf of files) {
         const i = state.files.findIndex((x) => x.path === nf.path);
@@ -163,6 +188,7 @@ function readFiles(list, add, stripRoot = false) {
       state.mainPath = '';
     }
     state.view = 'merged';
+    if (!add) markClean();
     showActive();
   });
 }
@@ -175,6 +201,7 @@ function loadSample(id) {
   state.active = 0;
   state.mainPath = '';
   state.view = 'merged';
+  markClean();
   showActive();
 }
 
@@ -208,7 +235,9 @@ function renderFilebar() {
     t.addEventListener('dblclick', () => renameFile(Number(t.dataset.i)));
   }
   for (const x of els.filebar.querySelectorAll('.x')) x.addEventListener('click', () => {
-    const i = Number(x.dataset.x);
+    const i = Number(x.dataset.x), f = state.files[i];
+    const orig = (() => { try { return JSON.parse(baseline || '[]').find(([p]) => p === f.path); } catch { return null; } })();
+    if (f.text.trim() && (!orig || orig[1] !== f.text) && !confirm(`${f.path} has unsaved edits. Close it and discard them?`)) return;
     state.files.splice(i, 1);
     if (state.active >= state.files.length || state.active > i) state.active = Math.max(0, state.active - 1);
     showActive();
@@ -319,7 +348,7 @@ function renderGutter() {
   const out = [];
   for (let i = 1; i <= n; i++) {
     const s = sev.get(i);
-    out.push(`<div class="ln${s ? ' ' + s : ''}"${s ? ` title="${s}"` : ''}>${i}</div>`);
+    out.push(`<div class="ln${s ? ' ' + s : ''}">${i}</div>`);
   }
   els.gutter.innerHTML = out.join('');
   const bands = [];
@@ -603,7 +632,9 @@ function renderFormatted() {
       <button class="btn ghost" id="out-copy">Copy</button>
       ${r.merged ? '' : '<button class="btn ghost" id="out-use">Replace editor</button>'}
       <span class="note">${esc(note)}</span></div><pre class="out" id="out-text"></pre>`;
-  $('#out-text').textContent = text;
+  const outPre = $('#out-text');
+  if (text.length <= HL_LIMIT) outPre.innerHTML = highlight(text, /\.ya?ml$/.test(name) ? 'yaml' : 'xml');
+  else outPre.textContent = text;
   $('#out-same').onclick = () => { outKind = 'same'; renderFormatted(); };
   $('#out-other').onclick = () => { outKind = 'other'; renderFormatted(); };
   $('#out-dl').onclick = () => download(name, text);
@@ -618,9 +649,8 @@ function renderFormatted() {
   const use = $('#out-use');
   if (use) use.onclick = () => {
     if (outKind === 'other') { f.path = f.path.replace(/\.(xml|conf|ya?ml)$/i, '') + (r.format === 'xml' ? '.yaml' : '.xml'); f.format = 'auto'; }
-    f.text = text;
     outKind = 'same';
-    showActive();
+    commitEdit(state.active, text);
   };
 }
 
@@ -706,6 +736,35 @@ const pxFor = (line, col) => {
 let hoverTimer = null, hoverKey = '';
 function hideHover(delay = 0) { clearTimeout(hoverTimer); hoverTimer = setTimeout(() => { els.hovercard.hidden = true; hoverKey = ''; }, delay); }
 
+// Findings shown on the line under the pointer (same filters as the list).
+const lineFindings = (n) => (last && last.findings ? last.findings.filter((f) => f.line === n && filter[f.sev] && forActive(f)) : []);
+const findingsHtml = (fs) => (fs.length ? `<div class="hc-findings">${fs.map((f) => `<div class="hc-f ${f.sev}"><span class="sev">${f.sev === 'info' ? 'note' : f.sev}</span><span>${fmtMsg(f.msg)}</span></div>`).join('')}</div>` : '');
+
+function showCard(html, line, a, key, passive = false) {
+  hoverKey = key;
+  clearTimeout(hoverTimer);
+  els.hovercard.innerHTML = html;
+  // A findings-only card has nothing to click, so it lets the pointer through to the lines it covers.
+  els.hovercard.classList.toggle('passive', passive);
+  els.hovercard.hidden = false;
+  const p = pxFor(line + 1, a);
+  const wrap = els.source.parentElement.getBoundingClientRect();
+  const w = els.hovercard.offsetWidth, h = els.hovercard.offsetHeight;
+  const top = p.top + h + 4 > wrap.height ? p.top - LH - h - 4 : p.top + 2;
+  els.hovercard.style.top = `${Math.max(4, top)}px`;
+  els.hovercard.style.left = `${Math.max(4, Math.min(p.left, wrap.width - w - 8))}px`;
+}
+
+/** Hover card for line `line` (0-based): the findings on it, if any. */
+function showLineFindings(line) {
+  const fs = lineFindings(line + 1);
+  if (!fs.length) { hideHover(250); return; }
+  const key = `f:${line}`;
+  if (key === hoverKey && !els.hovercard.hidden) { clearTimeout(hoverTimer); return; }
+  const indent = (els.source.value.split('\n')[line] || '').match(/^\s*/)[0].length;
+  showCard(findingsHtml(fs), line, indent, key, true);
+}
+
 function onHover(e) {
   if (!schema) return;
   const m = textMetrics();
@@ -715,43 +774,40 @@ function onHover(e) {
   const text = els.source.value;
   const lines = text.split('\n');
   const lt = lines[line];
-  if (lt == null || col < 0 || col >= lt.length) { hideHover(250); return; }
+  if (lt == null || line < 0) { hideHover(250); return; }
+  const info = col >= 0 && col < lt.length ? keyUnder(text, lines, line, col) : null;
+  if (!info) { showLineFindings(line); return; }
+  const key = `${line}:${info.a}:${info.path}`;
+  if (key === hoverKey && !els.hovercard.hidden) { clearTimeout(hoverTimer); return; }
+  const d = info.def || {};
+  const tier = d.tier ? `<span class="role tier-${d.tier}">${esc(d.tier.replace('_', ' '))}</span>` : '';
+  const obs = d.obsolete ? '<span class="role ignored">obsolete</span>' : '';
+  showCard(`${findingsHtml(lineFindings(line + 1))}<div class="hc-name">${esc(info.name)}${tier}${obs}</div>
+    <div class="hc-meta">${esc(info.scope)}${d.t ? ` · ${esc(d.t)}` : ''}${d.d !== '' && d.d != null ? ` · default ${esc(d.d)}` : ''}</div>
+    ${d.desc ? `<p>${fmtMsg(d.desc)}</p>` : ''}<a href="${esc(info.url)}" target="_blank" rel="noopener">Documentation</a>`, line, info.a, key);
+}
+
+/** The setting whose key is under column `col` of line `line`, with its docs, or null. */
+function keyUnder(text, lines, line, col) {
+  const lt = lines[line];
   let a = col, b = col;
   while (a > 0 && /[\w.\-]/.test(lt[a - 1])) a--;
   while (b < lt.length && /[\w.\-]/.test(lt[b])) b++;
   const word = lt.slice(a, b);
-  if (!/^[A-Za-z_]/.test(word)) { hideHover(250); return; }
-  const fmt = fmtOfActive();
+  if (!/^[A-Za-z_]/.test(word)) return null;
   const lineStart = lines.slice(0, line).reduce((s, l) => s + l.length + 1, 0);
   let path;
-  if (fmt === 'xml') {
+  if (fmtOfActive() === 'xml') {
     const close = lt.slice(Math.max(0, a - 2), a) === '</';
-    if (lt[a - 1] !== '<' && !close) { hideHover(250); return; }
+    if (lt[a - 1] !== '<' && !close) return null;
     path = contextPath(text, lineStart + a - (close ? 2 : 1), 'xml');
     if (close) path = path.slice(0, -1);
   } else {
-    if (!/^\s*["']?\s*:/.test(lt.slice(b))) { hideHover(250); return; }
+    if (!/^\s*["']?\s*:/.test(lt.slice(b))) return null;
     path = contextPath(text, lineStart + lt.match(/^\s*/)[0].length, 'yaml');
   }
-  const key = `${line}:${a}:${path.join('.')}`;
-  if (key === hoverKey && !els.hovercard.hidden) { clearTimeout(hoverTimer); return; }
   const info = lookup(schema, path, word);
-  if (!info) { hideHover(250); return; }
-  hoverKey = key;
-  clearTimeout(hoverTimer);
-  const d = info.def || {};
-  const tier = d.tier ? `<span class="role tier-${d.tier}">${esc(d.tier.replace('_', ' '))}</span>` : '';
-  const obs = d.obsolete ? '<span class="role ignored">obsolete</span>' : '';
-  els.hovercard.innerHTML = `<div class="hc-name">${esc(info.name)}${tier}${obs}</div>
-    <div class="hc-meta">${esc(info.scope)}${d.t ? ` · ${esc(d.t)}` : ''}${d.d !== '' && d.d != null ? ` · default ${esc(d.d)}` : ''}</div>
-    ${d.desc ? `<p>${fmtMsg(d.desc)}</p>` : ''}<a href="${esc(info.url)}" target="_blank" rel="noopener">Documentation</a>`;
-  els.hovercard.hidden = false;
-  const p = pxFor(line + 1, a);
-  const wrap = els.source.parentElement.getBoundingClientRect();
-  const w = els.hovercard.offsetWidth, h = els.hovercard.offsetHeight;
-  const top = p.top + h + 4 > wrap.height ? p.top - LH - h - 4 : p.top + 2;
-  els.hovercard.style.top = `${Math.max(4, top)}px`;
-  els.hovercard.style.left = `${Math.max(4, Math.min(p.left, wrap.width - w - 8))}px`;
+  return info ? { ...info, a, path: path.join('.') } : null;
 }
 
 const ac = { items: [], sel: 0, start: 0, end: 0, fmt: 'xml' };
