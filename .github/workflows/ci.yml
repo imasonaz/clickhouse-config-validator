@@ -13,3 +13,8 @@ jobs:
       - run: node test/run.mjs
       - name: Example configs pass the checker
         run: node bin/ch-config-check.mjs --format github test/fixtures/config.xml test/fixtures/keeper_config.xml
+      - name: The action itself
+        uses: ./
+        with:
+          path: test/fixtures/config.xml test/fixtures/keeper_config.xml
+          upgrade: 25.8:latest

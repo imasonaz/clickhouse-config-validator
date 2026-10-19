@@ -4,7 +4,7 @@ import { pathOf, child, childrenNamed, textOf, walk, getPath } from './tree.js';
 import { ref, SRC } from './docs.js';
 import { checkValue, suggest, SETTING_BOOL, POCO_BOOL } from './types.js';
 import { checkHost, isIPv4, isIPv6 } from './net.js';
-import { cmpVer, addedIn, obsoleteSince, defaultAt, defaultChanges, removedRange } from './versions.js';
+import { cmpVer, addedIn, obsoleteSince, defaultAt, defaultChanges, removedRange, tooNew, tierAt } from './versions.js';
 
 // Attributes ClickHouse's ConfigProcessor understands (configuration-files docs + ConfigProcessor.cpp).
 const PREPROCESSOR_ATTRS = new Set(['replace', 'remove', 'incl', 'from_env', 'from_zk', 'optional', 'merge', 'yaml', 'encrypted_by', 'hide_in_preprocessed']);
@@ -178,7 +178,7 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml', version =
   // allow_feature_tier: from this document, or passed in (e.g. from the server config when checking users.xml).
   const aft = getPath(cfg, 'allow_feature_tier');
   const tierLimit = aft && /^\d+$/.test(textOf(aft) || '') ? Number(textOf(aft)) : featureTier;
-  const ctx = { schema, add, recognized, mode: effectiveMode, cfg, relPath, hasSubst, valueNode, format, root, version, tierLimit };
+  const ctx = { schema, add, findings, recognized, mode: effectiveMode, cfg, relPath, hasSubst, valueNode, format, root, version, tierLimit };
 
   // ---------------------------------------------------------------- section checks
   checkRoot(ctx);
@@ -196,6 +196,8 @@ export function validate(doc, { schema, mode = 'auto', format = 'xml', version =
   checkMisc(ctx);
   checkHosts(ctx);
   checkEncryptionCodecs(ctx);
+  checkRefs(ctx);
+  checkListen(ctx);
 
   const order = { error: 0, warning: 1, info: 2 };
   findings.sort((a, b) => order[a.sev] - order[b.sev] || a.line - b.line);
@@ -231,8 +233,33 @@ function typeCheck(ctx, node, type, opts, refs) {
     ctx.add('warning', 'whitespace', ctx.valueNode(node), `Value of <${node.name}> has surrounding whitespace. ClickHouse setting parsers do not trim, so '${raw.replace(/\n/g, '\\n')}' may fail to parse; keep the value on one line with the tags.`,
       [...refs, ref.source(SRC.settingsParse, 'SettingsFieldsConversionHelpers.cpp')]);
   }
+  const e = ctx.schema.enums[type];
+  if (e && enumByRelease(ctx, node, e, raw, refs)) return;
   const r = checkValue(type, raw, { parser: opts?.parser, enums: ctx.schema.enums });
   if (r) ctx.add(r.sev, 'type', ctx.valueNode(node), `<${node.name}>: ${r.msg}`, [...refs, ...r.refs]);
+}
+
+/** Enum values that only some releases accept. Returns true when it reported the value (skip the usual check). */
+function enumByRelease(ctx, node, e, raw, refs) {
+  const items = (e.multi ? raw.split(',') : [raw]).map((x) => x.trim()).filter(Boolean);
+  const vn = ctx.valueNode(node);
+  const gone = items.filter((x) => !e.values.includes(x) && e.removed?.[x]);
+  if (gone.length && items.every((x) => e.values.includes(x) || e.removed?.[x])) {
+    for (const x of gone) {
+      const [first, last] = e.removed[x];
+      const span = first ? `${first} to ${last}` : `up to ${last}`;
+      if (ctx.version !== 'latest' && cmpVer(ctx.version, last) <= 0 && (!first || cmpVer(ctx.version, first) >= 0))
+        ctx.add('info', 'removed-later', vn, `<${node.name}>: '${x}' is accepted in ${ctx.version} but was removed after ${last} (releases ${span}); change it before upgrading.`, refs);
+      else ctx.add('error', 'removed-value', vn, `<${node.name}>: '${x}' was an allowed value in releases ${span} and has been removed. Allowed now: ${e.values.filter(Boolean).map((v) => `'${v}'`).join(', ')}.`, refs);
+    }
+    return true;
+  }
+  if (ctx.version === 'latest') return false;
+  for (const x of items) {
+    const since = e.since?.[x];
+    if (tooNew(since, ctx.version)) ctx.add('error', 'version-too-new', vn, `<${node.name}>: '${x}' ${since === 'next' ? 'is not in any release yet' : `was added in ${since}`}; ${ctx.version} doesn't accept it.`, refs);
+  }
+  return false;
 }
 
 function unknownChild(ctx, node, known, refs, { sev = 'warning', what = 'key' } = {}) {
@@ -313,7 +340,8 @@ function lifecycle(ctx, node, what, name, def, docRef, kind = '') {
     row.def = defaultAt(def, ctx.version);
     const ch = defaultChanges(def);
     if (ch.length) row.hist = ch.map((c) => `${c.version}: ${c.from} → ${c.to}`).join('; ');
-    if (def.tier) row.tier = def.tier;
+    const tr = tierAt(def, ctx.version);
+    if (tr) row.tier = tr;
   }
   const o = def.obsolete ? obsoleteSince(def) : null;
   if (def.obsolete && (ctx.version === 'latest' || !o || cmpVer(o.version, ctx.version) <= 0)) {
@@ -324,13 +352,15 @@ function lifecycle(ctx, node, what, name, def, docRef, kind = '') {
   if (ctx.version !== 'latest' && added && (added === 'next' || cmpVer(added, ctx.version) > 0)) {
     const fail = kind === 'profile' ? 'loading the users config fails with UNKNOWN_SETTING' : kind === 'mergetree' || kind === 'coordination' ? `${kind === 'coordination' ? 'Keeper' : 'the server'} refuses to start (UNKNOWN_SETTING)` : 'it is ignored';
     const when = added === 'next' ? 'is not in any release yet (only in the master sources)' : `was added in ${added}`;
-    ctx.add('error', 'version-too-new', node, `<${node.name}> ${when}; on ${ctx.version} it doesn't exist, so ${fail}.`, refs);
+    ctx.add(fail === 'it is ignored' ? 'warning' : 'error', 'version-too-new', node, `<${node.name}> ${when}; on ${ctx.version} it doesn't exist, so ${fail}.`, refs);
   }
-  if (def.tier && !def.obsolete) {
-    const t = TIER[def.tier];
-    ctx.add(t.sev, `tier-${def.tier.replace('_', '-')}`, node, `<${node.name}> is ${t.text}.`, [...refs, ref.server('allow_feature_tier')]);
+  const tier = tierAt(def, ctx.version);
+  if (tier && !def.obsolete) {
+    const t = TIER[tier];
+    const atTarget = ctx.version !== 'latest' && tier !== (def.tier || null) ? ` in ${ctx.version}${def.tier ? ` (${TIER_NAME[def.tier]} in later releases)` : ' (generally available in later releases)'}` : '';
+    ctx.add(t.sev, `tier-${tier.replace('_', '-')}`, node, `<${node.name}> is ${t.text}${atTarget}.`, [...refs, ref.server('allow_feature_tier')]);
     if ((kind === 'profile' || kind === 'mergetree') && ctx.tierLimit != null && ctx.tierLimit >= t.rank)
-      ctx.add('warning', 'tier-blocked', node, `allow_feature_tier is ${ctx.tierLimit}, which rejects changes to ${TIER_NAME[def.tier]} settings like <${node.name}> (it acts like a readonly constraint on them).`, [ref.server('allow_feature_tier')]);
+      ctx.add('warning', 'tier-blocked', node, `allow_feature_tier is ${ctx.tierLimit}, which rejects changes to ${TIER_NAME[tier]} settings like <${node.name}> (it acts like a readonly constraint on them).`, [ref.server('allow_feature_tier')]);
   }
 }
 
@@ -349,6 +379,47 @@ function removedSetting(ctx, scope, node, what, consequence, refs) {
   return true;
 }
 
+/**
+ * ClickHouse 26.8+ refuses to start when a top-level element is neither a server setting nor one of the known
+ * sections (ServerSettings::checkUnknownSettings, UNKNOWN_ELEMENT_IN_CONFIG), unless
+ * skip_check_for_incorrect_settings is set. Upgrades the findings already made for such keys to errors.
+ */
+function strictTopLevel(ctx, from) {
+  const { schema, cfg, mode } = ctx;
+  const st = schema.serverStrict;
+  if (mode !== 'server' || !st?.since || st.since === 'next' || (ctx.version !== 'latest' && cmpVer(ctx.version, st.since) < 0)) return;
+  if (isTrue(textOf(child(cfg, 'skip_check_for_incorrect_settings')) ?? '')) return;
+  const known = new Set([...Object.entries(schema.server).filter(([, d]) => !tooNew(d.since, ctx.version)).map(([k]) => k),
+    ...Object.values(schema.serverWithPath).map((x) => x.path.split('.')[0]), ...st.sections, 'include']);
+  // Sections referenced by name: HTTP handler groups of <protocols> and config:// payloads of static handlers.
+  const groups = [];
+  for (const p of child(cfg, 'protocols')?.children || []) {
+    const h = textOf(child(p, 'handlers'));
+    if (textOf(child(p, 'type')) === 'http' && h) { known.add(h.split(/[.[]/)[0]); groups.push(h); }
+  }
+  if (child(cfg, 'http_handlers')) groups.push('http_handlers');
+  for (const g of groups) for (const rule of getPath(cfg, g)?.children || []) {
+    const h = child(rule, 'handler');
+    if (!h) continue;
+    const v = textOf(child(h, 'response_content')) || '';
+    if (textOf(child(h, 'type')) === 'static' && v.startsWith('config://')) known.add(v.slice(9).split(/[.[]/)[0]);
+  }
+  const prefixOk = (k) => st.prefixes.some((p) => k === p || (k.startsWith(p) && k[p.length] === '_'));
+  const graphite = (n) => (!n.children.length ? !(n.text ?? '').trim()
+    : n.children.every((c) => c.name.startsWith('pattern') || ['default', 'path_column_name', 'time_column_name', 'value_column_name', 'version_column_name'].includes(c.name)));
+  const msg = ` Since ${st.since}, ClickHouse refuses to start with an unknown top-level element (UNKNOWN_ELEMENT_IN_CONFIG) unless <skip_check_for_incorrect_settings> is 1.`;
+  const sref = ref.source(SRC.serverSettings || SRC.server, 'ServerSettings.cpp (checkUnknownSettings)');
+  const seen = new Set();
+  for (const n of cfg.children) {
+    if (known.has(n.name) || prefixOk(n.name) || graphite(n) || seen.has(n.name)) continue;
+    seen.add(n.name);
+    const mine = ctx.findings.slice(from).filter((f) => f.line === n.line && f.file === n.file && f.path === ctx.relPath(n).join(' › ') && f.code !== 'type' && f.code !== 'empty');
+    if (mine.some((f) => f.code === 'session-at-root' && f.sev === 'error')) continue; // that check fails first
+    if (mine.length) for (const f of mine) { f.sev = 'error'; f.msg = f.msg.replace(/, so it is ignored\./, '.').replace(/ (Unknown keys are silently ignored|At the top level ClickHouse ignores it|ClickHouse ignores unknown keys unless a component reads them)\./, '') + msg; f.refs = [...f.refs, sref]; }
+    else ctx.add('error', 'unknown-element', n, `<${n.name}> is not a server setting or a known config section.${msg}`, [sref]);
+  }
+}
+
 function settingDoc(scope, name) {
   return scope === 'session' ? ref.session(name) : scope === 'mergeTree' ? ref.mergeTree(name) : scope === 'coordination' ? ref.keeperCoordination() : ref.server(name);
 }
@@ -365,6 +436,7 @@ function checkRoot(ctx) {
     'users', 'profiles', 'quotas', 'roles', 'include', 'keeper_server', 'include_from', ...SYSTEM_LOGS, 'auxiliary_zookeepers', 'named_collections',
     'kafka', 's3', 'hdfs', 'azure', 'dictionaries', 'functions', 'encryption_codecs', 'clickhouse', 'yandex']);
 
+  const before = ctx.findings.length;
   for (const n of cfg.children) {
     const name = n.name;
     if (name === 'include') continue;
@@ -383,7 +455,9 @@ function checkRoot(ctx) {
     // Misplaced settings.
     const sess = schema.session[name] || schema.session[schema.sessionAliases[name]];
     if (sess) {
-      add('warning', 'session-at-root', n, `<${name}> is a session (query-level) setting. At the top level of the server config it has no effect; set it in a settings profile, e.g. <profiles><default><${name}>…</${name}></default></profiles>.`,
+      // Settings::checkNoSettingNamesAtTopLevel: the server refuses to start (UNKNOWN_ELEMENT_IN_CONFIG).
+      const fatal = mode === 'server' && !sess.obsolete && !['max_table_size_to_drop', 'max_partition_size_to_drop', 'compression'].includes(name) && !isTrue(textOf(child(cfg, 'skip_check_for_incorrect_settings')) ?? '');
+      add(fatal ? 'error' : 'warning', 'session-at-root', n, `<${name}> is a session (query-level) setting${fatal ? `; at the top level of the server config ClickHouse refuses to start ("A setting '${name}' appeared at top level", UNKNOWN_ELEMENT_IN_CONFIG)` : ' and has no effect at the top level'}. Set it in a settings profile, e.g. <profiles><default><${name}>…</${name}></default></profiles>.`,
         [ref.session(name), ref.users('user-nameprofile', 'Settings profiles')]);
       continue;
     }
@@ -409,6 +483,7 @@ function checkRoot(ctx) {
       else add('info', 'unknown-key', n, `<${name}> is not a known server setting (not in ServerSettings.cpp, the server settings docs, or the reference config). ClickHouse ignores unknown keys unless a component reads them.`, [ref.server(name)]);
     }
   }
+  strictTopLevel(ctx, before);
 
   // Settings configured by path (logger.level, openSSL.server.*, query_cache.*, distributed_ddl.*, …).
   for (const [name, s] of Object.entries(schema.serverWithPath)) {
@@ -493,7 +568,12 @@ function checkKeeper(ctx, ks) {
   const fl = get('four_letter_word_white_list');
   if (fl && textOf(fl) && textOf(fl) !== '*') {
     for (const w of textOf(fl).split(',').map((x) => x.trim()).filter(Boolean)) {
-      if (!schema.fourLetterWords.includes(w)) add('warning', '4lw', ctx.valueNode(fl), `Unknown four letter word command '${w}'.`, [ref.keeper4lw(), ref.source(SRC.coordination, 'CoordinationSettings.cpp')]);
+      const wref = [ref.keeper4lw(), ref.source(SRC.coordination, 'CoordinationSettings.cpp')];
+      const gone = schema.fourLetterWordsRemoved?.[w];
+      if (gone) {
+        if (ctx.version === 'latest' || cmpVer(ctx.version, gone[1]) > 0) add('warning', '4lw', ctx.valueNode(fl), `Four letter word command '${w}' was removed after ${gone[1]}.`, wref);
+      } else if (!schema.fourLetterWords.includes(w)) add('warning', '4lw', ctx.valueNode(fl), `Unknown four letter word command '${w}'.`, wref);
+      else if (tooNew(schema.fourLetterWordsSince?.[w], ctx.version)) add('warning', 'version-too-new', ctx.valueNode(fl), `Four letter word command '${w}' was added in ${schema.fourLetterWordsSince[w]}; Keeper ${ctx.version} doesn't have it.`, wref);
     }
   }
   const sd = get('superdigest');
@@ -539,6 +619,8 @@ function checkKeeper(ctx, ks) {
   const ff = get('feature_flags');
   if (ff) {
     for (const c of ff.children) {
+      const fsince = schema.keeperFeatureFlagsSince?.[c.name.toLowerCase()];
+      if (tooNew(fsince, ctx.version)) add('error', 'version-too-new', c, `Keeper feature flag <${c.name}> ${fsince === 'next' ? 'is not in any release yet' : `was added in ${fsince}`}; Keeper ${ctx.version} refuses to start with it.`, [ref.keeperFlags()]);
       if (!schema.keeperFeatureFlags.includes(c.name.toLowerCase())) {
         const s = suggest(c.name, schema.keeperFeatureFlags);
         add('error', 'feature-flag', c, `Invalid Keeper feature flag <${c.name}>${s ? `; did you mean <${s.name}>?` : ''}. Keeper refuses to start.`, [ref.keeperFlags(), ref.source(SRC.keeperContext, 'KeeperContext.cpp (initializeFeatureFlags)')]);
@@ -644,7 +726,30 @@ function checkPorts(ctx) {
     if (Number(v) > 65535) { if (ctx.schema.server[p]) ctx.add('error', 'port-range', ctx.valueNode(n), `<${p}> = ${v} is not a valid TCP port (0-65535).`, [ref.server(p)]); continue; }
     if (seen.has(v)) ctx.add('error', 'port-dup', n, `Port ${v} is used by both <${seen.get(v)}> and <${p}>; the second listener fails with "Address already in use".`, [ref.server(p.split('.')[0])]);
     else seen.set(v, p);
+    privileged(ctx, n, v, p);
   }
+  // Custom listeners in <protocols>: each entry with a <port> opens its own socket (on <host>, or every listen_host).
+  const protos = child(ctx.cfg, 'protocols');
+  if (protos && !ctx.hasSubst(protos)) {
+    const pref = ref.server('protocols');
+    for (const pr of protos.children) {
+      const pn = child(pr, 'port');
+      const v = pn && textOf(pn);
+      if (!v || ctx.hasSubst(pn) || !/^\d+$/.test(v)) continue;
+      const host = textOf(child(pr, 'host'));
+      const key = host ? `${v}@${host}` : v;
+      const label = `protocols.${pr.name}.port`;
+      if (seen.has(v) && (!host || !seen.has(key))) ctx.add('error', 'port-dup', pn, `Port ${v} is used by both <${seen.get(v)}> and <${label}>; the second listener fails with "Address already in use".`, [pref]);
+      else if (seen.has(key)) ctx.add('error', 'port-dup', pn, `Port ${v} is used by both <${seen.get(key)}> and <${label}>; the second listener fails with "Address already in use".`, [pref]);
+      else { seen.set(key, label); if (!host) seen.set(v, label); }
+      privileged(ctx, pn, v, label);
+    }
+  }
+}
+
+function privileged(ctx, n, v, label) {
+  const port = Number(v);
+  if (port > 0 && port < 1024) ctx.add('info', 'port-privileged', ctx.valueNode(n), `<${label}> = ${port} is a privileged port (below 1024). The server needs CAP_NET_BIND_SERVICE to bind it; the packaged systemd unit grants it, but a container or a manually started server may fail with "Permission denied".`, [ref.server(label.split('.')[0])]);
 }
 
 // ------------------------------------------------------------------ users / profiles / quotas
@@ -1174,4 +1279,100 @@ function checkMisc(ctx) {
   const tz = child(cfg, 'timezone');
   if (tz && textOf(tz) && !/^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+)*$|^UTC$|^Etc\/GMT[+-]\d+$/.test(textOf(tz)))
     add('warning', 'timezone', ctx.valueNode(tz), `'${textOf(tz)}' does not look like an IANA time zone name (e.g. Europe/Moscow, UTC).`, [ref.server('timezone')]);
+}
+
+// ------------------------------------------------------------------ references between sections
+// Names used in one place that must be defined in another: macros in replicated paths, storage policies
+// and disks. A name defined in a config.d file that isn't loaded shows up here, so the wording says "this config".
+const SPECIAL_MACROS = ['database', 'table', 'uuid'];
+const macroNames = (v) => [...String(v).matchAll(/\{([^{}]+)\}/g)].map((m) => m[1]);
+
+function checkRefs(ctx) {
+  const { cfg, add } = ctx;
+  if (ctx.mode === 'users') return;
+  const mref = ref.server('macros'), msrc = ref.source(SRC.macros, 'Macros.cpp');
+  const macrosEl = child(cfg, 'macros');
+  const macrosOpaque = macrosEl && (ctx.hasSubst(macrosEl) || macrosEl.children.some((c) => c.name === 'include'));
+  const macros = new Set(macrosEl ? macrosEl.children.map((c) => c.name) : []);
+  let special = true;
+  if (macrosEl) for (const m of macrosEl.children) if (SPECIAL_MACROS.includes(m.name)) {
+    special = false;
+    add('warning', 'macro-special', m, `Macro <${m.name}> has a special meaning. Defining it turns off the implicit {database}, {table} and {uuid} expansion in replicated table paths; ClickHouse logs a warning at startup.`, [mref, msrc]);
+  }
+  const builtin = (name) => name === 'server_uuid' || (special && SPECIAL_MACROS.includes(name));
+  if (!macrosOpaque) {
+    const sites = [];
+    for (const k of ['default_replica_path', 'default_replica_name']) { const n = child(cfg, k); if (n && textOf(n) && !ctx.hasSubst(n)) sites.push({ n, what: `<${k}>`, docs: ref.server(k) }); }
+    for (const name of SYSTEM_LOGS) { const e = getPath(cfg, `${name}.engine`); if (e && textOf(e) && !ctx.hasSubst(e)) sites.push({ n: e, what: `<${name}><engine>`, docs: ref.server(name), startup: true }); }
+    for (const { n, what, docs, startup } of sites) {
+      const missing = [...new Set(macroNames(textOf(n)).filter((m) => !builtin(m) && !macros.has(m)))];
+      if (missing.length) add('warning', 'macro-undefined', ctx.valueNode(n), `${what} uses ${missing.map((m) => `{${m}}`).join(', ')}, but <macros> in this config doesn't define ${missing.length > 1 ? 'them' : 'it'}. ${startup ? 'Creating the log table fails' : 'Creating a ReplicatedMergeTree table without explicit paths (outside a Replicated database) fails'} with "No macro '${missing[0]}' in config".`, [docs, mref, msrc]);
+    }
+    // Defaults: /clickhouse/tables/{uuid}/{shard} and {replica}. Only flagged when <macros> is present but incomplete.
+    if (macrosEl && macrosEl.children.length && (child(cfg, 'zookeeper') || child(cfg, 'keeper_server'))) {
+      const implicit = [];
+      if (!child(cfg, 'default_replica_path') && !macros.has('shard')) implicit.push('shard');
+      if (!child(cfg, 'default_replica_name') && !macros.has('replica')) implicit.push('replica');
+      if (implicit.length) add('info', 'macro-default-missing', macrosEl, `<macros> doesn't define ${implicit.map((m) => `{${m}}`).join(' or ')}, which the default replica path (/clickhouse/tables/{uuid}/{shard}, replica {replica}) uses. ReplicatedMergeTree tables created without explicit paths will fail with "No macro '${implicit[0]}' in config".`, [ref.server('default_replica_path'), mref]);
+    }
+  }
+
+  // Storage policies and disks.
+  const sc = child(cfg, 'storage_configuration');
+  if (sc && ctx.hasSubst(sc)) return;
+  const policiesEl = sc && child(sc, 'policies');
+  const disksEl = sc && child(sc, 'disks');
+  if ((policiesEl && ctx.hasSubst(policiesEl)) || (disksEl && ctx.hasSubst(disksEl))) return;
+  const policies = new Map([['default', null], ...(policiesEl ? policiesEl.children.map((p) => [p.name, p]) : [])]);
+  const disks = new Set(['default', ...(disksEl ? disksEl.children.map((d) => d.name) : [])]);
+  const sref = ref.server('storage_configuration');
+  const known = (set) => [...set].map((x) => `'${x}'`).join(', ');
+  const usePolicy = (n, what, consequence, sev = 'warning', docs = sref) => {
+    const v = n && !ctx.hasSubst(n) && textOf(n);
+    if (!v || policies.has(v)) return;
+    const s = suggest(v, [...policies.keys()]);
+    add(sev, 'policy-undefined', ctx.valueNode(n), `${what} uses storage policy '${v}', which this config doesn't define${s ? `; did you mean '${s.name}'?` : ` (defined: ${known(policies.keys())})`}. ${consequence}`, [docs, sref]);
+  };
+  const useDisk = (n, what, consequence, sev = 'warning', docs = sref) => {
+    const v = n && !ctx.hasSubst(n) && textOf(n);
+    if (!v || disks.has(v)) return;
+    const s = suggest(v, [...disks]);
+    add(sev, 'disk-undefined', ctx.valueNode(n), `${what} uses disk '${v}', which this config doesn't define${s ? `; did you mean '${s.name}'?` : ` (defined: ${known(disks)})`}. ${consequence}`, [docs, sref]);
+  };
+  const tmp = child(cfg, 'tmp_policy');
+  usePolicy(tmp, '<tmp_policy>', 'The server fails to start (UNKNOWN_POLICY).', 'error', ref.server('tmp_policy'));
+  const tp = tmp && policies.get(textOf(tmp));
+  if (tp) {
+    const vols = child(tp, 'volumes');
+    if (vols && vols.children.length !== 1) add('error', 'tmp-policy-volumes', ctx.valueNode(tmp), `Storage policy '${textOf(tmp)}' has ${vols.children.length} volumes; a policy used for temporary files must have exactly one, or the server fails to start.`, [ref.server('tmp_policy'), ref.source(SRC.context, 'Context.cpp (setTemporaryStoragePolicy)')]);
+  }
+  if (!tmp || !textOf(tmp)) useDisk(child(cfg, 'temporary_data_in_cache'), '<temporary_data_in_cache>', 'The server fails to start (UNKNOWN_DISK).', 'error', ref.server('temporary_data_in_cache'));
+  usePolicy(getPath(cfg, 'merge_tree.storage_policy'), '<merge_tree><storage_policy>', 'Creating MergeTree tables that rely on this default fails with UNKNOWN_POLICY.', 'warning', ref.mergeTree('storage_policy'));
+  for (const name of SYSTEM_LOGS) usePolicy(getPath(cfg, `${name}.storage_policy`), `<${name}>`, `Creating ${name} fails with UNKNOWN_POLICY, so it stays empty.`, 'warning', ref.server(name));
+  for (const n of childrenNamed(child(cfg, 'backups') || { children: [] }, 'allowed_disk')) useDisk(n, '<backups><allowed_disk>', "BACKUP … TO Disk('…') with that disk fails.", 'warning', ref.server('backups'));
+}
+
+// ------------------------------------------------------------------ listen_host
+const LOOPBACK = (h) => /^(localhost|127(\.\d+){3}|::1|0:0:0:0:0:0:0:1)$/i.test(h);
+function checkListen(ctx) {
+  const { cfg, add } = ctx;
+  if (ctx.mode === 'users') return;
+  const lref = ref.server('listen_host');
+  const lh = childrenNamed(cfg, 'listen_host').filter((n) => !ctx.hasSubst(n) && textOf(n));
+  const seen = new Map();
+  for (const n of lh) {
+    const v = textOf(n).trim();
+    if (seen.has(v)) add('info', 'listen-dup', ctx.valueNode(n), `listen_host '${v}' is listed twice (first on line ${seen.get(v).line}). ClickHouse binds it once, so the copy can be removed (verified with 26.9).`, [lref]);
+    else seen.set(v, n);
+  }
+  if (childrenNamed(cfg, 'listen_host').some((n) => ctx.hasSubst(n))) return;
+  // Hosts other nodes would connect from: replicas in remote_servers and Keeper Raft peers.
+  const peers = new Set();
+  for (const cl of child(cfg, 'remote_servers')?.children || []) walk(cl, (n) => { if (n.name === 'host' && textOf(n) && !/[{}$]/.test(textOf(n))) peers.add(textOf(n).trim()); });
+  for (const s of getPath(cfg, 'keeper_server.raft_configuration')?.children || []) { const h = textOf(child(s, 'hostname')); if (h) peers.add(h.trim()); }
+  const remote = [...peers].filter((h) => !LOOPBACK(h));
+  if (remote.length < 2) return;
+  const what = child(cfg, 'keeper_server') && ctx.mode === 'keeper' ? 'the Keeper client port' : 'this server';
+  if (!lh.length) add('info', 'listen-default-local', child(cfg, 'remote_servers') || child(cfg, 'keeper_server') || cfg, `No <listen_host> is set, so ClickHouse listens on localhost only, but this config lists other hosts (${remote.slice(0, 3).join(', ')}${remote.length > 3 ? '…' : ''}). They can't reach ${what} unless listen_host is set in another config file, e.g. <listen_host>::</listen_host>.`, [lref]);
+  else if (lh.every((n) => LOOPBACK(textOf(n).trim()))) add('warning', 'listen-local-only', ctx.valueNode(lh[0]), `listen_host only covers loopback addresses, but this config lists other hosts (${remote.slice(0, 3).join(', ')}${remote.length > 3 ? '…' : ''}). They can't reach ${what}. Listen on '::' or this host's address.`, [lref]);
 }

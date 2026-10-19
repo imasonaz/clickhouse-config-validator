@@ -1,0 +1,10 @@
+{
+  "name": "clickhouse-config-check",
+  "version": "1.0.0",
+  "description": "Validate ClickHouse server, users and Keeper configuration files",
+  "private": true,
+  "type": "module",
+  "bin": { "ch-config-check": "bin/ch-config-check.mjs" },
+  "scripts": { "test": "node test/run.mjs" },
+  "engines": { "node": ">=18" }
+}

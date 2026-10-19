@@ -1,0 +1,10 @@
+# pre-commit (https://pre-commit.com) hook. By default it checks the ClickHouse config files a commit touches.
+# To check whole config folders merged with their config.d / users.d fragments instead, set
+# pass_filenames: false and list the folders in args (see README).
+- id: clickhouse-config-check
+  name: ClickHouse config check
+  description: Validate ClickHouse server, users and Keeper configs.
+  entry: ch-config-check
+  language: node
+  files: '(^|/)((config|users|keeper_config)\.(xml|ya?ml)|(config|users|conf)\.d/[^/]+\.(xml|ya?ml|conf))$'
+  require_serial: true

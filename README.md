@@ -18,14 +18,18 @@ Nothing is uploaded. There is no backend.
 | Clusters | `remote_servers` structure as enforced by `Cluster.cpp` (shard/replica elements, missing host/port, shard names all-or-none) |
 | Keeper | required keys, coordination settings (unknown keys refuse startup), feature flags, four-letter-word list, `raft_configuration` checks mirrored from `KeeperStateManager.cpp` (duplicate ids/endpoints, own `server_id` present, localhost mixing, raft port collisions), election/heartbeat bounds, even voter counts |
 | Merging | `config.d`/`users.d` fragments merged into the main file as `ConfigProcessor.cpp` does (name order, `replace`, `remove`, root checks), then `incl` (from the `include_from` file), `from_env` and `from_zk` substitutions using values you supply; the merged result is validated, with every finding pointing at the file and line it came from. Checked against the output of a real ClickHouse 26.9 server, including which of several identical sibling elements a fragment merges into |
-| Lifecycle | obsolete settings (with the version and reason), experimental / private preview / beta settings, `allow_feature_tier` rejections; for a chosen target release (24.1 onwards), settings that don't exist yet and settings that were removed (or that still exist there but are gone in later releases); defaults are shown for that version |
+| Lifecycle | obsolete settings (with the version and reason), experimental / private preview / beta settings, `allow_feature_tier` rejections; for a chosen target release (24.1 onwards), settings, enum values, Keeper feature flags and four-letter-word commands that don't exist yet, and ones that were removed (or still exist there but are gone in later releases); defaults and feature tiers are shown as they are in that release |
 | Logging, disks, encryption | `logger.size`/`rotation` and `count` as Poco parses them (`1GB` fails startup), S3/Azure disk endpoints and credential pairs, encrypted disks and `encryption_codecs` key sizes, `current_key_id`, nonce length |
 | Addresses | `listen_host`, `interserver_http_host`, `host`, `hostname`: valid IPv4 / IPv6 / host names, no ports |
-| Other sections | `zookeeper`, `logger`, system log tables (`engine` vs `partition_by`/`order_by`/`ttl`…), `storage_configuration` disk/policy references, duplicate ports, `listen_host` conflicts |
+| References | macros used in `default_replica_path`, `default_replica_name` and system log engines must be defined (and `{database}`/`{table}`/`{uuid}` must not be); storage policies and disks used by `tmp_policy` (startup error), `temporary_data_in_cache`, `merge_tree.storage_policy`, system logs and `backups.allowed_disk`; `default_profile` / `system_profile` against the loaded profiles |
+| Ports and listening | duplicate ports (including `<protocols>` listeners), privileged ports, `listen_host` duplicates and `::` + `0.0.0.0`, loopback-only listening while the config names other cluster or Raft hosts |
+| Other sections | `zookeeper`, `logger`, system log tables (`engine` vs `partition_by`/`order_by`/`ttl`…), `storage_configuration` structure |
 
 In the editor, hovering a key shows its type, default and docs, and typing `<` (or a YAML key) offers the keys valid at that spot. The editor colours XML and YAML syntax. Unknown keys suggest where a key of that name is valid; misspellings get a one-click rename, and misplaced keys a one-click move into the right section (missing sections are created, the rest of the file is left as written). XML pasted from a terminal, email or ticket that was hard-wrapped mid-tag or mid-value is detected and can be joined back up in one click. The page also shows a table of every recognised setting with its default, type and default history, re-formats files, converts XML ↔ YAML, and downloads the formatted, converted or merged (`*-preprocessed.xml`) config. Findings export as Markdown or JSON, and **Share link** puts the files in the URL fragment (never sent to a server) with passwords, keys and secrets replaced by `REDACTED`.
 
-With several Keeper configs loaded it cross-checks the ensemble: unique `server_id`s, identical `raft_configuration`, matching coordination timeouts, and server `<zookeeper>` entries that point at Raft ports instead of client ports.
+The **Upgrade** tab picks a from and to release and runs every check at both: findings that are new (or got worse) at the target, ones that go away, default and tier changes for the settings the config sets, and defaults that change under the settings it leaves unset. It downloads as Markdown; the CLI does the same with `--upgrade`.
+
+With several files loaded it also checks across them; see [What it checks across files](#what-it-checks-across-files).
 
 Limitations: substitutions without a value you supply are reported and left unresolved; a lone fragment checked without its main file can't resolve references to other files.
 
@@ -46,11 +50,49 @@ node bin/ch-config-check.mjs --format github deploy/clickhouse # annotations in 
 
 Formats: `text`, `markdown`, `json`, `github`. Exit code is 1 when a finding reaches `--fail-on` (default `error`). `--env` resolves `from_env` from the process environment; `--subst file` reads `NAME=value` and `/zk/path=value` lines. It needs only Node 18+ and this repository (no npm install).
 
-GitHub Actions step:
+Upgrade report (what changes for these configs between two releases; Markdown, or JSON with `--format json`):
+
+```sh
+node bin/ch-config-check.mjs --upgrade 24.8:26.9 /etc/clickhouse-server
+```
+
+### GitHub Action
+
+The repository is also a GitHub Action. It puts annotations on the PR diff, writes a Markdown report (and optionally an upgrade report) to the job summary, and fails at `fail-on`:
 
 ```yaml
-- run: node path/to/clickhouse-config-check/bin/ch-config-check.mjs --format github deploy/clickhouse
+- uses: actions/checkout@v4
+- uses: <owner>/<this-repo>@main
+  with:
+    path: deploy/clickhouse            # files or folders, space-separated (e.g. one folder per node)
+    version: '25.8'                    # optional, default latest
+    fail-on: error                     # optional: error | warning | info | never
+    upgrade: '25.8:26.3'               # optional
 ```
+
+### pre-commit
+
+```yaml
+repos:
+  - repo: https://github.com/<owner>/<this-repo>
+    rev: main
+    hooks:
+      - id: clickhouse-config-check
+      # To check whole folders merged with config.d / users.d instead of only the changed files:
+      #   pass_filenames: false
+      #   args: [deploy/clickhouse]
+```
+
+By default the hook runs on `config.xml`, `users.xml`, `keeper_config.xml` (or `.yaml`) and files in `config.d/`, `users.d/` and `conf.d/`.
+
+## What it checks across files
+
+Loading several files (or folders) together adds checks that need more than one file:
+
+- **Server nodes**: each folder with its own `config.xml` and `config.d/` is merged as one node, then the nodes are compared: the same `remote_servers` clusters, a unique `{shard}`/`{replica}` pair per node, `{shard}` matching the shard that lists the node, the same `<zookeeper>`, `distributed_ddl` path, `default_replica_path` and `interserver_http_credentials`.
+- **Keeper ensemble**: unique `server_id`, identical `raft_configuration` and coordination settings, and server `<zookeeper>` entries pointing at the client port, not the Raft port.
+- **Users references**: `default_profile`, `system_profile`, `distributed_ddl.profile` and the users that clusters connect as must exist in the loaded users files.
+- **Ports**: a server and a standalone Keeper loaded together are checked for ports that clash on a shared host.
 
 ## Settings data
 
@@ -60,7 +102,7 @@ GitHub Actions step:
 tools/fetch_sources.sh master   # or a release tag, e.g. v25.8.1.1-lts
 ```
 
-It then runs `tools/releases.py`, which does a shallow, sparse git checkout of the newest patch of every release since 24.1 and records each setting's first release and any settings that were removed (cached in `~/.cache/ccv-releases`; the first run takes a few minutes). Session and MergeTree settings are exact; for server and Keeper keys, which can be read outside the settings classes, any mention of the key in the sources counts.
+It then runs `tools/releases.py`, which does a shallow, sparse git checkout of the newest patch of every release since 24.1 and records each setting's first release, removed settings, server/Keeper default changes, feature-tier changes, and the enum values, Keeper feature flags and four-letter words each release accepts (cached in `~/.cache/ccv-releases`; the first run takes a few minutes). Session and MergeTree settings are exact; for server and Keeper keys, which can be read outside the settings classes, any mention of the key in the sources counts.
 
 `.github/workflows/refresh-schema.yml` does this weekly and opens a pull request when the data changes.
 

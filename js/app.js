@@ -4,8 +4,9 @@
 import { analyze, analyzeSet, detectFormat } from './engine.js';
 import { toXml, toYaml, formatYamlDoc } from './format.js';
 import { SAMPLES } from './samples.js';
-import { knownVersions } from './versions.js';
+import { knownVersions, cmpVer } from './versions.js';
 import { highlight } from './highlight.js';
+import { upgradeReport, upgradeMarkdown, GROUP_LABEL } from './upgrade.js';
 import { moveElement, unwrapLines } from './fix.js';
 import { toMarkdown, toJson } from './report.js';
 import { shareableState, encodeState, decodeState } from './share.js';
@@ -17,7 +18,7 @@ const els = {
   mode: $('#mode'), format: $('#format'), version: $('#version'), sample: $('#sample'), file: $('#file'), folder: $('#folder'), upload: $('#upload'), uploadDir: $('#upload-dir'),
   clear: $('#clear'), share: $('#share'), toast: $('#toast'), hovercard: $('#hovercard'), ac: $('#ac'), filebar: $('#filebar'), summary: $('#summary'), meta: $('#meta'), viewsw: $('#viewsw'),
   tabs: [...document.querySelectorAll('.tab')],
-  panels: { findings: $('#panel-findings'), settings: $('#panel-settings'), merge: $('#panel-merge'), formatted: $('#panel-formatted') },
+  panels: { findings: $('#panel-findings'), settings: $('#panel-settings'), merge: $('#panel-merge'), upgrade: $('#panel-upgrade'), formatted: $('#panel-formatted') },
   generated: $('#generated'),
 };
 
@@ -57,6 +58,14 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 // Render `x` and <x> fragments in messages as code.
 const fmtMsg = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/&lt;([A-Za-z_@#][\w.\-:\[\] ]*?\/?)&gt;/g, '<code>&lt;$1&gt;</code>');
 const base = (p) => p.slice(p.lastIndexOf('/') + 1);
+// File name for labels: the base name, or the whole path when another open file has the same base name.
+const shortPath = (p) => {
+  if (state.files.filter((f) => base(f.path) === base(p)).length < 2) return base(p);
+  const parts = p.split('/');
+  return parts.length > 2 ? `${parts[0]}/…/${parts[parts.length - 1]}` : p;
+};
+// The same as HTML that wraps only after a '/', never at a hyphen.
+const fileLabel = (p) => esc(shortPath(p)).replace(/-/g, '\u2011').replace(/\//g, '/<wbr>');
 
 async function init() {
   const res = await fetch('data/schema.json');
@@ -309,6 +318,7 @@ function render() {
   renderFindings();
   renderSettings();
   renderMerge();
+  renderUpgrade();
   renderFormatted();
   els.tabs.find((t) => t.dataset.tab === 'findings').querySelector('.count').textContent = r.findings.length || '';
   els.tabs.find((t) => t.dataset.tab === 'settings').querySelector('.count').textContent = r.recognized?.length || '';
@@ -397,7 +407,7 @@ function renderFindings() {
       <div class="body">${f.path ? `<div class="path">${esc(f.path)}</div>` : ''}<p class="msg">${fmtMsg(f.msg)}</p>
       ${fix ? `<div class="fix">${fix}</div>` : ''}
       <div class="refs">${f.refs.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener"${x.source ? ' class="src"' : ''}>${esc(x.label)}</a>`).join('')}</div></div>
-      <span class="loc">${showFile && f.file ? `<span class="lf">${esc(base(f.file))}</span>` : ''}line ${f.line}</span>`;
+      <span class="loc">${showFile && f.file ? `<span class="lf" title="${esc(f.file)}">${fileLabel(f.file)}</span>` : ''}line ${f.line}</span>`;
     const go = (e) => { if (e.target.closest('a, button')) return; jumpToFinding(f); };
     li.addEventListener('click', go);
     li.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(e); });
@@ -545,7 +555,7 @@ function renderSettings() {
     return `<tr><td class="mono"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>${r.tier ? ` <span class="role tier-${r.tier}">${esc(r.tier.replace('_', ' '))}</span>` : ''}<div class="note">${esc(r.scope)}</div></td>
       <td class="mono">${changed ? `<span class="changed">${esc(r.value)}</span>` : esc(r.value)}</td>
       <td class="mono">${esc(r.def)}${r.hist ? `<div class="note" title="Default changes by version">${esc(r.hist)}</div>` : ''}</td><td class="mono">${esc(r.type)}</td>
-      <td class="mono"><button class="linkish" type="button" data-file="${esc(r.file || '')}" data-line="${r.line}">${showFile && r.file ? `${esc(base(r.file))}:` : ''}${r.line}</button></td></tr>`;
+      <td class="mono"><button class="linkish" type="button" data-file="${esc(r.file || '')}" data-line="${r.line}">${showFile && r.file ? `${esc(shortPath(r.file))}:` : ''}${r.line}</button></td></tr>`;
   }).join('');
   p.innerHTML = `<div class="settings-wrap"><table class="settings"><thead><tr><th>Setting</th><th>Value</th><th>Default${state.version !== 'latest' ? ` in ${esc(state.version)}` : ''}</th><th>Type</th><th>${showFile ? 'Source' : 'Line'}</th></tr></thead><tbody>${body}</tbody></table></div>`;
   for (const b of p.querySelectorAll('[data-line]')) b.addEventListener('click', () => jumpToFinding({ file: b.dataset.file || undefined, line: Number(b.dataset.line) }));
@@ -591,6 +601,64 @@ function renderMerge() {
     clearTimeout(timer);
     timer = setTimeout(() => { const pos = ta.selectionStart; run(); const t = $('#subst'); t.focus(); t.setSelectionRange(pos, pos); }, 400);
   });
+}
+
+// ---------------------------------------------------------------- upgrade report
+
+// Default "from": the newest LTS (x.3 / x.8) before the target that isn't the release right before it.
+function defaultUpgradeFrom(to) {
+  const vs = knownVersions(schema).filter((v) => to === 'latest' || cmpVer(v, to) < 0);
+  return vs.find((v, i) => /\.(3|8)$/.test(v) && i > 0) || vs[Math.min(4, vs.length - 1)];
+}
+
+let upgradeCache = { key: '', report: null };
+function renderUpgrade() {
+  const p = els.panels.upgrade;
+  if (p.hidden || !schema) return;
+  if (last.empty) { p.innerHTML = '<div class="all-clear">Load a config to see what changes for it between two ClickHouse releases.</div>'; return; }
+  const versions = knownVersions(schema);
+  const to = state.upTo && (state.upTo === 'latest' || versions.includes(state.upTo)) ? state.upTo : versions[0];
+  let from = state.upFrom && versions.includes(state.upFrom) ? state.upFrom : defaultUpgradeFrom(to);
+  if (to !== 'latest' && cmpVer(from, to) >= 0) from = defaultUpgradeFrom(to);
+  const key = JSON.stringify([state.files.map((f) => [f.path, f.text, f.format]), state.mainPath, state.subst, els.mode.value, from, to]);
+  if (upgradeCache.key !== key) upgradeCache = { key, report: upgradeReport(state.files, { schema, from, to, mode: els.mode.value, mainPath: state.mainPath, substitutions: state.subst }) };
+  const r = upgradeCache.report;
+  const opts = (sel, list) => list.map((v) => `<option value="${v}"${v === sel ? ' selected' : ''}>${v === 'latest' ? 'master (unreleased)' : v}</option>`).join('');
+  const tools = `<div class="out-tools"><label class="up-sel">From <select id="up-from">${opts(from, versions.slice(1))}</select></label>
+      <label class="up-sel">to <select id="up-to">${opts(to, ['latest', ...versions])}</select></label>
+      ${r.error ? '' : '<button class="btn" id="up-dl" type="button">Download report</button>'}
+      <span class="note">Runs every check at both versions and compares, then lists default and tier changes in between.</span></div>`;
+  if (r.error) { p.innerHTML = `${tools}<div class="all-clear">${esc(r.error)}</div>`; bindUpgrade(from, to); return; }
+  const showFile = multi();
+  const fl = (list) => `<ul class="findings">${list.map((f, i) => `<li class="finding ${f.sev}" tabindex="0" data-i="${i}"><span class="sev">${f.sev === 'info' ? 'note' : f.sev}</span>
+      <div class="body">${f.path ? `<div class="path">${esc(f.path)}</div>` : ''}<p class="msg">${fmtMsg(f.msg)}</p>${f.was ? `<div class="note">Was ${f.was === 'info' ? 'a note' : `a ${f.was}`} on ${esc(from)}.</div>` : ''}</div>
+      <span class="loc">${showFile && f.file ? `<span class="lf" title="${esc(f.file)}">${fileLabel(f.file)}</span>` : ''}line ${f.line}</span></li>`).join('')}</ul>`;
+  const chg = (cs) => cs.map((c) => `<div><span class="note">${esc(c.version)}</span> ${esc(c.from)} → <strong>${esc(c.to)}</strong></div>`).join('');
+  const setRows = r.set.map((x) => `<tr><td class="mono"><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a><div class="note">${esc(x.scope)}</div></td>
+      <td class="mono">${esc(x.value)}</td><td class="mono">${chg(x.changes)}</td><td class="mono">${x.tier ? `${esc(x.tier.from.replace('_', ' '))} → <strong>${esc(x.tier.to.replace('_', ' '))}</strong>` : ''}</td></tr>`).join('');
+  const unsetCount = Object.values(r.unset).reduce((n, rows) => n + rows.length, 0);
+  const unset = Object.entries(r.unset).map(([g, rows]) => `<details class="up-group"><summary>${esc(GROUP_LABEL[g])} <span class="note">${rows.length}</span></summary>
+      <div class="settings-wrap"><table class="settings"><thead><tr><th>Setting</th><th>Default changes</th></tr></thead><tbody>
+      ${rows.map((x) => `<tr><td class="mono">${esc(x.name)}</td><td class="mono">${chg(x.changes)}</td></tr>`).join('')}</tbody></table></div></details>`).join('');
+  const toName = to === 'latest' ? 'master' : to;
+  p.innerHTML = `${tools}<div class="upgrade">
+    <p class="up-sum"><strong>${r.added.length}</strong> new finding${r.added.length === 1 ? '' : 's'} at ${esc(toName)}, <strong>${r.resolved.length}</strong> resolved, <strong>${r.set.length}</strong> of your settings changed default or tier, and <strong>${unsetCount}</strong> defaults changed for settings you leave unset.</p>
+    <h3>New at ${esc(toName)}</h3>${r.added.length ? fl(r.added) : `<p class="note">Nothing new: no finding appears on ${esc(toName)} that isn't already there on ${esc(from)}.</p>`}
+    ${r.resolved.length ? `<h3>Resolved by ${esc(toName)}</h3>${fl(r.resolved)}` : ''}
+    <h3>Settings you set</h3>${r.set.length ? `<div class="settings-wrap"><table class="settings"><thead><tr><th>Setting</th><th>Your value</th><th>Default changes</th><th>Tier</th></tr></thead><tbody>${setRows}</tbody></table></div>` : '<p class="note">No default or tier changes for the settings this config sets.</p>'}
+    ${unset ? `<h3>Defaults that change under you</h3><p class="note">Settings this config doesn't set, whose default changed between ${esc(from)} and ${esc(toName)}.</p>${unset}` : ''}</div>`;
+  const lists = p.querySelectorAll('.upgrade ul.findings');
+  const srcs = [r.added, r.resolved];
+  lists.forEach((ul, k) => { for (const li of ul.querySelectorAll('li')) li.addEventListener('click', () => jumpToFinding(srcs[k][Number(li.dataset.i)])); });
+  $('#up-dl').onclick = () => {
+    const stem = (merged() ? base(set.mainPath) : base(activeFile().path)).replace(/\.[^.]+$/, '') || 'config';
+    download(`${stem}-upgrade-${from}-to-${toName}.md`, upgradeMarkdown(r, { source: merged() ? `${set.mainPath}, merged with its fragments` : activeFile().path }), 'text/markdown');
+  };
+  bindUpgrade(from, to);
+}
+function bindUpgrade(from, to) {
+  $('#up-from').onchange = (e) => { state.upFrom = e.target.value; save(); renderUpgrade(); };
+  $('#up-to').onchange = (e) => { state.upTo = e.target.value; if (state.upTo !== 'latest' && cmpVer(state.upFrom || from, state.upTo) >= 0) state.upFrom = ''; save(); renderUpgrade(); };
 }
 
 let outKind = 'same';
@@ -687,6 +755,7 @@ function selectTab(name) {
   for (const t of els.tabs) t.setAttribute('aria-selected', String(t.dataset.tab === name));
   for (const [k, p] of Object.entries(els.panels)) p.hidden = k !== name;
   store.set('ccv.tab', name);
+  if (name === 'upgrade') renderUpgrade();
 }
 
 function onKey(e) {

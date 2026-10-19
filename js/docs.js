@@ -62,4 +62,7 @@ export const SRC = {
   cluster: 'src/Interpreters/Cluster.cpp',
   systemLog: 'src/Interpreters/SystemLog.cpp',
   enums: 'src/Core/SettingsEnums.cpp',
+  macros: 'src/Common/Macros.cpp',
+  server: 'programs/server/Server.cpp',
+  context: 'src/Interpreters/Context.cpp',
 };

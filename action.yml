@@ -1,0 +1,50 @@
+name: ClickHouse config check
+description: Validate ClickHouse server, users and Keeper configs (XML or YAML), merged with their config.d / users.d fragments, with annotations on the PR.
+branding:
+  icon: check-square
+  color: yellow
+inputs:
+  path:
+    description: Config files or directories to check, separated by spaces (e.g. deploy/clickhouse or several node folders).
+    required: true
+  version:
+    description: Target ClickHouse release, e.g. 25.8 (default latest).
+    default: latest
+  mode:
+    description: auto | server | users | keeper
+    default: auto
+  fail-on:
+    description: Fail the step at this severity or above - error | warning | info | never.
+    default: error
+  upgrade:
+    description: Optional FROM:TO (e.g. 25.3:25.8). Adds an upgrade report for that move to the job summary.
+    default: ''
+  env:
+    description: Set to true to resolve from_env substitutions from the job's environment.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - name: Check ClickHouse configs
+      shell: bash
+      env:
+        CCV: ${{ github.action_path }}/bin/ch-config-check.mjs
+        CCV_PATHS: ${{ inputs.path }}
+        CCV_VERSION: ${{ inputs.version }}
+        CCV_MODE: ${{ inputs.mode }}
+        CCV_FAIL_ON: ${{ inputs.fail-on }}
+        CCV_UPGRADE: ${{ inputs.upgrade }}
+        CCV_ENV: ${{ inputs.env }}
+      run: |
+        read -ra paths <<< "$CCV_PATHS"
+        extra=()
+        [ "$CCV_ENV" = "true" ] && extra+=(--env)
+        common=(--version "$CCV_VERSION" --mode "$CCV_MODE" "${extra[@]}")
+        node "$CCV" "${common[@]}" --format markdown --fail-on never "${paths[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+        if [ -n "$CCV_UPGRADE" ]; then
+          node "$CCV" --upgrade "$CCV_UPGRADE" --mode "$CCV_MODE" "${extra[@]}" --fail-on never "${paths[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+        fi
+        node "$CCV" "${common[@]}" --format github --fail-on "$CCV_FAIL_ON" "${paths[@]}"

@@ -8,6 +8,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative, basename } from 'node:path';
 import { analyzeSet, mainCandidates } from '../js/engine.js';
 import { toText, toMarkdown, toJson, toGithub } from '../js/report.js';
+import { upgradeReport, upgradeMarkdown } from '../js/upgrade.js';
 
 const HELP = `Usage: ch-config-check [options] <file or directory>...
 
@@ -20,6 +21,9 @@ Options:
   --subst <file>        substitutions file: NAME=value lines, /zk/path=value for from_zk
   --format <f>          text | markdown | json | github (default text; github emits workflow annotations)
   --fail-on <sev>       error | warning | info | never (default error)
+  --upgrade <from:to>   upgrade report instead of a check, e.g. 24.8:26.9 (to may be "latest"): findings that
+                        are new at <to>, and default/tier changes in between. Markdown, or JSON with --format json.
+                        --fail-on then applies to the new findings only.
   -h, --help`;
 
 const args = process.argv.slice(2);
@@ -35,6 +39,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--subst') opt.subst = val();
   else if (a === '--format') opt.format = val();
   else if (a === '--fail-on') opt.failOn = val();
+  else if (a === '--upgrade') opt.upgrade = val();
   else if (a.startsWith('-')) die(`unknown option ${a}\n\n${HELP}`);
   else opt.paths.push(a);
 }
@@ -62,6 +67,29 @@ let subst = opt.subst ? readFileSync(opt.subst, 'utf8') : '';
 if (opt.env) {
   const names = new Set([...files.map((f) => f.text).join('\n').matchAll(/from_env\s*[=:]\s*["']?([A-Za-z_][\w]*)/g)].map((m) => m[1]));
   subst += '\n' + [...names].filter((n) => n in process.env).map((n) => `${n}=${process.env[n]}`).join('\n');
+}
+
+if (opt.upgrade) {
+  const [from, to] = opt.upgrade.split(':');
+  if (!from || !to) die('--upgrade needs FROM:TO, e.g. 24.8:26.9');
+  const mains = opt.main ? [opt.main] : mainCandidates(files);
+  const consumed = new Set();
+  const reports = [];
+  for (const m of mains) {
+    if (consumed.has(m)) continue;
+    const plan = analyzeSet(files, { schema, mode: opt.mode, mainPath: m, substitutions: subst }).plan;
+    for (const p of plan) if (p.role === 'fragment' || p.role === 'include' || p.role === 'main') consumed.add(p.path);
+    reports.push({ main: m, ...upgradeReport(files, { schema, from, to, mode: opt.mode, mainPath: m, substitutions: subst }) });
+  }
+  const err = reports.find((r) => r.error);
+  if (err) die(`${err.main}: ${err.error}`);
+  if (opt.format === 'json') console.log(JSON.stringify(reports.map(({ main, from: f, to: t, mode, added, resolved, set, unset }) => ({ main, from: f, to: t, mode,
+    added: added.map(({ sev, code, file, line, msg, was }) => ({ severity: sev, was, code, file, line, message: msg })),
+    resolved: resolved.map(({ sev, code, file, line, msg, was }) => ({ severity: sev, was, code, file, line, message: msg })), set, unset })), null, 2));
+  else console.log(reports.map((r) => upgradeMarkdown(r, { source: `Main config: ${r.main}` })).join('\n'));
+  const rank = { info: 1, warning: 2, error: 3, never: 99 };
+  const worst = Math.max(0, ...reports.flatMap((r) => r.added.map((f) => rank[f.sev])));
+  process.exit(worst >= (rank[opt.failOn] ?? 3) ? 1 : 0);
 }
 
 // Check every file that can be a main config, skipping those already merged into another as fragments or includes.

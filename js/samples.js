@@ -329,4 +329,52 @@ http_port:
 ` },
     ],
   },
+  {
+    id: 'cluster-nodes',
+    label: 'Three server nodes (multiple folders)',
+    files: ['ch-1', 'ch-2', 'ch-3'].flatMap((n, i) => [
+      { path: `${n}/config.xml`, text: `<clickhouse>
+    <listen_host>::</listen_host>
+    <tcp_port>9000</tcp_port>
+    <http_port>8123</http_port>
+    <interserver_http_port>9009</interserver_http_port>
+    <zookeeper>
+        <node><host>keeper-1</host><port>9181</port></node>
+        <node><host>keeper-2</host><port>9181</port></node>
+        <node><host>keeper-3</host><port>9181</port></node>
+        <root>${i === 2 ? '/clickhouse-prod' : '/clickhouse'}</root>
+    </zookeeper>${i === 0 ? `
+    <storage_configuration>
+        <disks><scratch><path>/mnt/scratch/</path></scratch></disks>
+        <policies><tmp><volumes><main><disk>scratch</disk></main></volumes></tmp></policies>
+    </storage_configuration>
+    <tmp_policy>temp</tmp_policy>` : ''}
+</clickhouse>
+` },
+      { path: `${n}/config.d/cluster.xml`, text: `<clickhouse>
+    <remote_servers>
+        <prod>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica><host>ch-1</host><port>9000</port></replica>
+                <replica><host>ch-2</host><port>9000</port></replica>
+            </shard>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica><host>ch-3</host><port>9000</port></replica>
+            </shard>
+        </prod>
+    </remote_servers>
+</clickhouse>
+` },
+      { path: `${n}/config.d/macros.xml`, text: `<clickhouse>
+    <macros>
+        <cluster>prod</cluster>
+        <shard>01</shard>
+        <replica>${i === 1 ? 'ch-1' : n}</replica>
+    </macros>
+</clickhouse>
+` },
+    ]),
+  },
 ];

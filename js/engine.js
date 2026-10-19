@@ -7,14 +7,14 @@ import { validate } from './validate.js';
 import { setSchema, ref, SRC } from './docs.js';
 import { planFiles, mergeDocs, applySubstitutions, tagFile, parseSubstitutions } from './merge.js';
 import { child, textOf } from './tree.js';
-import { crossCheck } from './cluster.js';
+import { crossCheck, crossRefs, nodeCheck, portOverlap } from './cluster.js';
 
 export function detectFormat(text) {
   const t = text.replace(/^﻿/, '').trimStart();
   return t.startsWith('<') ? 'xml' : 'yaml';
 }
 
-export function analyze(text, { schema, mode = 'auto', format = 'auto', version = 'latest', featureTier = null } = {}) {
+export function analyze(text, { schema, mode = 'auto', format = 'auto', version = 'latest', featureTier = null, standalone = true } = {}) {
   setSchema(schema);
   const fmt = format === 'auto' ? detectFormat(text) : format;
   const src = text.replace(/^﻿/, '');
@@ -39,6 +39,7 @@ export function analyze(text, { schema, mode = 'auto', format = 'auto', version 
   }
   const res = validate(doc, { schema, mode, format: fmt, version, featureTier });
   res.findings.unshift(...wrapFinding('warning'));
+  if (standalone) res.findings.push(...crossRefs([{ path: '', doc }]).map(({ file, ...f }) => f));
   return { format: fmt, doc, ...res };
 }
 
@@ -70,18 +71,40 @@ export function analyzeSet(files, { schema, mode = 'auto', mainPath, substitutio
   for (const f of files) { const m = /<allow_feature_tier>\s*(\d)\s*<\/allow_feature_tier>|^allow_feature_tier:\s*(\d)\s*$/m.exec(f.text); if (m) featureTier = Number(m[1] ?? m[2]); }
   const perFile = new Map();
   for (const f of files) {
-    const res = analyze(f.text, { schema, mode, format: fmtOf(f.path, f.text, f.format), version, featureTier });
+    const res = analyze(f.text, { schema, mode, format: fmtOf(f.path, f.text, f.format), version, featureTier, standalone: false });
     for (const x of res.findings) x.file = f.path;
     if (res.doc) tagFile(res.doc.root, f.path);
     perFile.set(f.path, res);
   }
-  const cross = crossCheck([...perFile].filter(([, r]) => r.doc).map(([path, r]) => ({ path, doc: r.doc })));
+  const parsed = [...perFile].filter(([, r]) => r.doc).map(([path, r]) => ({ path, doc: r.doc }));
+  const cross = [...crossCheck(parsed), ...crossRefs(parsed)];
   const mains = mainCandidates(files);
+  const { env, zk } = parseSubstitutions(substitutions);
+  // Each main config with its own fragments, merged the way its server would see it (for cross-node checks).
+  const effRoot = (d) => d.meta?.explicitClickhouseRoot ? { ...d.meta.explicitClickhouseRoot, name: 'clickhouse' } : d.root;
+  const nodeOf = new Map();   // file -> the main config it belongs to
+  const mergedFor = (path) => {
+    const r = perFile.get(path);
+    const inc0 = child(effRoot(r.doc), 'include_from');
+    const plan0 = planFiles(files.map((f) => ({ path: f.path })), path, inc0 ? textOf(inc0) : null);
+    const docs0 = [{ path, doc: { root: effRoot(r.doc) } }];
+    for (const p of plan0) if (p.role === 'fragment' && perFile.get(p.path).doc && perFile.get(p.path).mode === r.mode) { docs0.push({ path: p.path, doc: { root: effRoot(perFile.get(p.path).doc) } }); nodeOf.set(p.path, path); }
+    nodeOf.set(path, path);
+    const { root: merged0 } = mergeDocs(docs0);
+    const incP = plan0.find((p) => p.role === 'include');
+    const incD = incP && perFile.get(incP.path).doc;
+    applySubstitutions(merged0, { env, zk, includeRoot: incD ? effRoot(incD) : null, includePath: incP ? incP.path : '' });
+    return { path, root: merged0 };
+  };
+  const mainsOfMode = (m) => mains.filter((p) => perFile.get(p)?.doc && perFile.get(p).mode === m);
+  const serverNodes = mainsOfMode('server').map(mergedFor);
+  const keeperNodes = mainsOfMode('keeper').map(mergedFor);
+  cross.push(...nodeCheck(serverNodes));
+  if (keeperNodes.length && serverNodes.length && keeperNodes.length + serverNodes.length === 2) cross.push(...portOverlap(serverNodes, keeperNodes));
   mainPath = mains.includes(mainPath) ? mainPath : mains[0] || files[0]?.path;
   const main = perFile.get(mainPath);
   if (!main || !main.doc) return { mainPath, mains, perFile, cross, plan: [], events: [], findings: main ? [...main.findings, ...cross] : cross, recognized: [], mode: main?.mode || mode, merged: null };
 
-  const effRoot = (d) => d.meta?.explicitClickhouseRoot ? { ...d.meta.explicitClickhouseRoot, name: 'clickhouse' } : d.root;
   const inc = child(effRoot(main.doc), 'include_from');
   const includeFrom = inc ? textOf(inc) : null;
   const plan = planFiles(files.map((f) => ({ path: f.path })), mainPath, includeFrom);
@@ -93,12 +116,16 @@ export function analyzeSet(files, { schema, mode = 'auto', mainPath, substitutio
       p.reason = `looks like a separate ${r.mode} config; put it under config.d/ to merge it`;
     }
   }
+  // Files of another node (its own main config and fragments) are checked against this one, not merged into it.
+  for (const p of plan) {
+    const owner = nodeOf.get(p.path);
+    if (p.role === 'ignored' && owner && owner !== mainPath) { p.role = 'separate'; p.reason = owner === p.path ? 'another node\'s main config; compared with this one in the cross-node checks' : `part of ${owner}; compared in the cross-node checks`; }
+  }
   const docs = [{ path: mainPath, doc: { root: effRoot(main.doc) } }];
   for (const p of plan) if (p.role === 'fragment' && perFile.get(p.path).doc) docs.push({ path: p.path, doc: { root: effRoot(perFile.get(p.path).doc) } });
   const { root, events, findings: mergeFindings } = mergeDocs(docs);
   const incPlan = plan.find((p) => p.role === 'include');
   const incDoc = incPlan && perFile.get(incPlan.path).doc;
-  const { env, zk } = parseSubstitutions(substitutions);
   const substFindings = applySubstitutions(root, { env, zk, includeRoot: incDoc ? effRoot(incDoc) : null, includePath: incPlan ? incPlan.path : includeFrom || '' });
   if (includeFrom && !incPlan && /\bincl=/.test(files.map((f) => f.text).join('\n')))
     mergeFindings.push({ sev: 'info', code: 'include-from-missing', file: mainPath, line: inc.line, msg: `<include_from> points to ${includeFrom}, which is not among the loaded files; incl substitutions are not resolved. Add that file to check them.` });
